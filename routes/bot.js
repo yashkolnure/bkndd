@@ -80,63 +80,42 @@ router.get('/webhook/meta', async (req, res) => {
 router.get('/config', auth, socialCtrl.getSettings);
 router.post('/settings/update', auth, socialCtrl.updateSettings);
 
-router.post('/webhook/meta', async (req, res) => {
-    const { botId } = req.query; // Your Handshake URL has ?botId=...
-    const body = req.body;
+// --- PUBLIC: Meta Webhook Verification (GET) ---
+router.get('/webhooks/meta', async (req, res) => {
+    // 1. Extract parameters from Meta's request
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+    const botId = req.query['botId']; 
 
-    // 1. Acknowledge receipt immediately to Meta (important to avoid 500 errors)
-    res.status(200).send('EVENT_RECEIVED');
+    console.log(`\n--- 🤝 META HANDSHAKE INITIATED ---`);
+    console.log(`Incoming Bot ID: ${botId}`);
+    console.log(`Expected Mode: subscribe | Received: ${mode}`);
+    console.log(`Received Token: ${token}`);
 
     try {
-        // 2. Resolve the user's social configuration
+        // 2. Resolve the config from MongoDB
         const config = await SocialConfig.findOne({ userId: botId });
-        if (!config) return console.log("❌ Bot configuration not found for:", botId);
 
-        /* --- WHATSAPP LOGIC --- */
-        if (body.object === 'whatsapp_business_account' && config.whatsapp.enabled) {
-            const entry = body.entry?.[0]?.changes?.[0]?.value;
-            const message = entry?.messages?.[0];
-
-            if (message?.type === 'text') {
-                const customerPhone = message.from;
-                const messageText = message.text.body;
-
-                console.log(`\n--- 📥 WHATSAPP MESSAGE FROM ${customerPhone} ---`);
-                
-                // Process through AI Engine
-                await handleSocialResponse(
-                    botId, 
-                    config.whatsapp.token, 
-                    config.whatsapp.phoneNumberId, 
-                    customerPhone, 
-                    messageText, 
-                    'whatsapp'
-                );
-            }
+        if (!config) {
+            console.error("❌ Handshake Failed: BotId not found in SocialConfig.");
+            return res.status(404).send('Bot not configured');
         }
 
-        /* --- INSTAGRAM LOGIC --- */
-        if (body.object === 'instagram' && config.instagram.enabled) {
-            const entry = body.entry?.[0]?.messaging?.[0];
-            const senderId = entry?.sender?.id;
-            const messageText = entry?.message?.text;
-
-            if (messageText && senderId) {
-                console.log(`\n--- 📥 INSTAGRAM DM FROM ${senderId} ---`);
-                
-                // Process through AI Engine
-                await handleSocialResponse(
-                    botId, 
-                    config.instagram.token, 
-                    config.instagram.businessId, 
-                    senderId, 
-                    messageText, 
-                    'instagram'
-                );
-            }
+        // 3. Match the stored verifyToken with Meta's token
+        if (mode === 'subscribe' && token === config.verifyToken) {
+            console.log("✅ Handshake Successful! Sending challenge back to Meta.");
+            
+            // Meta expects the challenge to be returned as a PLAIN STRING, not JSON.
+            return res.status(200).send(challenge);
+        } else {
+            console.error("❌ Handshake Failed: Token mismatch.");
+            console.log(`Stored Token: ${config.verifyToken} vs Received: ${token}`);
+            return res.status(403).send('Verification Failed');
         }
     } catch (err) {
-        console.error("🔥 Webhook Processing Error:", err.message);
+        console.error("🔥 Handshake Error:", err.message);
+        return res.status(500).send('Internal Error');
     }
 });
 
