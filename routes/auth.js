@@ -75,6 +75,73 @@ router.get('/callback', async (req, res) => {
     res.redirect('https://myautobot.in/dashboard/integrations?status=error');
 }
 });
+
+// GET myautobot.in/api/auth/webhook
+router.get('/webhook', (req, res) => {
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+
+    // Check if the mode and token sent match your .env variable
+    if (mode === 'subscribe' && token === process.env.META_VERIFY_TOKEN) {
+        console.log('WEBHOOK_VERIFIED');
+        res.status(200).send(challenge); // You MUST return the challenge string
+    } else {
+        res.sendStatus(403);
+    }
+});
+
+// POST myautobot.in/api/auth/webhook
+router.post('/webhook', async (req, res) => {
+    const body = req.body;
+
+    // Check if this is a message from Instagram or WhatsApp
+    if (body.object === 'instagram' || body.object === 'whatsapp_business_account') {
+        const entry = body.entry[0];
+        
+        // 1. Identify the message source
+        const messaging = entry.messaging ? entry.messaging[0] : null;
+        const changes = entry.changes ? entry.changes[0] : null;
+
+        const senderId = messaging?.sender?.id || changes?.value?.messages?.[0]?.from;
+        const messageText = messaging?.message?.text || changes?.value?.messages?.[0]?.text?.body;
+        const recipientId = entry.id; // This matches the Business ID in your DB
+
+        if (!messageText) return res.sendStatus(200);
+
+        try {
+            // 2. Find the bot owner in your DB
+            const botOwner = await User.findOne({ 
+                $or: [{ instagramBusinessId: recipientId }, { whatsappBusinessId: recipientId }] 
+            });
+
+            if (!botOwner || botOwner.tokens < 5) return res.sendStatus(200);
+
+            // 3. SEND TO OLLAMA (Your self-hosted model)
+            const aiResponse = await axios.post('http://YOUR_VPS_IP:11434/api/generate', {
+                model: "llama3.2",
+                prompt: `User Query: ${messageText}`, // You can add your custom system prompt here
+                stream: false
+            });
+
+            const reply = aiResponse.data.response;
+
+            // 4. DEDUCT TOKENS
+            await User.findByIdAndUpdate(botOwner._id, { $inc: { tokens: -5 } });
+
+            // 5. REPLY TO USER (I'll provide the sendReply helper next)
+            await sendReply(senderId, reply, botOwner.instagramToken);
+
+        } catch (err) {
+            console.error("Processing Error:", err.message);
+        }
+
+        res.sendStatus(200); // Always send 200 OK immediately to Meta
+    } else {
+        res.sendStatus(404);
+    }
+});
+
 // --- 1. REGISTER ---
 router.post('/register', async (req, res) => {
   // Normalize email to lowercase
