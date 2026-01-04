@@ -17,28 +17,63 @@ router.get('/callback', async (req, res) => {
     }
 
     try {
-        // Exchange the 'code' for a Short-Lived User Access Token
-        const response = await axios.get(`https://graph.facebook.com/v18.0/oauth/access_token`, {
-            params: {
-                client_id: process.env.META_APP_ID,
-                client_secret: process.env.META_APP_SECRET,
-                redirect_uri: 'https://myautobot.in/api/auth/callback',
-                code
-            }
-        });
+    // 1. Exchange 'code' for Short-Lived Token (Your current step)
+    const tokenRes = await axios.get(`https://graph.facebook.com/v18.0/oauth/access_token`, {
+        params: {
+            client_id: process.env.META_APP_ID,
+            client_secret: process.env.META_APP_SECRET,
+            redirect_uri: 'https://myautobot.in/api/auth/callback',
+            code
+        }
+    });
+    const shortToken = tokenRes.data.access_token;
 
-        const userToken = response.data.access_token;
-        
-        // Success! You now have the token to fetch their Instagram/WhatsApp IDs.
-        // We will store this in your DB linked to the current user.
-        console.log("Meta Handshake Complete:", userToken);
-        
-        res.redirect('https://myautobot.in/dashboard/integrations?status=success');
+    // 2. UPGRADE to Long-Lived Token (60 Days)
+    // This ensures your bot doesn't stop working after 2 hours!
+    const longLivedRes = await axios.get(`https://graph.facebook.com/v18.0/oauth/access_token`, {
+        params: {
+            grant_type: 'fb_exchange_token',
+            client_id: process.env.META_APP_ID,
+            client_secret: process.env.META_APP_SECRET,
+            fb_exchange_token: shortToken
+        }
+    });
+    const finalToken = longLivedRes.data.access_token;
 
-    } catch (error) {
-        console.error("Meta Auth Error:", error.response?.data || error.message);
-        res.redirect('https://myautobot.in/dashboard/integrations?status=error');
-    }
+    // 3. AUTOMATIC ACCOUNT DISCOVERY
+    // Fetch Facebook Pages + Linked Instagram Accounts
+    const accountsRes = await axios.get(`https://graph.facebook.com/v18.0/me/accounts`, {
+        params: { 
+            fields: 'instagram_business_account,access_token,name',
+            access_token: finalToken 
+        }
+    });
+
+    // Fetch WhatsApp Business Accounts
+    const waRes = await axios.get(`https://graph.facebook.com/v18.0/me/whatsapp_business_accounts`, {
+        params: { access_token: finalToken }
+    });
+
+    // 4. PICK THE FIRST ACTIVE ACCOUNTS
+    const igAccount = accountsRes.data.data.find(page => page.instagram_business_account);
+    const waAccount = waRes.data.data[0]; // Gets the first WhatsApp Business Account
+
+    // 5. UPDATE DATABASE
+    // We link these IDs to the user so your Webhook knows who is who
+    await User.findByIdAndUpdate(req.user.id, {
+        instagramToken: igAccount?.access_token, // Page-specific token for replies
+        instagramBusinessId: igAccount?.instagram_business_account?.id,
+        whatsappBusinessId: waAccount?.id,
+        instagramEnabled: !!igAccount,
+        whatsappEnabled: !!waAccount
+    });
+
+    res.redirect('https://myautobot.in/dashboard/integrations?status=success');
+
+} catch (error) {
+    console.error("Meta Discovery Error:", error.response?.data || error.message);
+    res.redirect('https://myautobot.in/dashboard/integrations?status=error');
+}
 });
 // --- 1. REGISTER ---
 router.post('/register', async (req, res) => {

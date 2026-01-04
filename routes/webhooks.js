@@ -5,17 +5,15 @@ const axios = require('axios');
 const { decrypt } = require('../utils/encryption'); // You'll need a decryption helper
 
 router.get('/meta', (req, res) => {
-    const mode = req.query['hub.mode'];
-    const token = req.query['hub.verify_token'];
-    const challenge = req.query['hub.challenge'];
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
 
-    // This token must match exactly what you told your users to use: 'avenirya_secret'
-    if (mode === 'subscribe' && token === 'avenirya_secret') {
-        console.log('WEBHOOK_VERIFIED');
-        res.status(200).send(challenge);
-    } else {
-        res.sendStatus(403);
-    }
+  if (mode && token === process.env.META_VERIFY_TOKEN) {
+    res.status(200).send(challenge);
+  } else {
+    res.sendStatus(403);
+  }
 });
 
 router.post('/meta', async (req, res) => {
