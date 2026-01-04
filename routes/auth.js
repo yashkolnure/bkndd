@@ -5,7 +5,41 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto'); 
 const sendEmail = require('../utils/sendEmail');
 const User = require('../models/User');
+const axios = require('axios');
 
+
+// This handles: GET myautobot.in/api/auth/callback
+router.get('/callback', async (req, res) => {
+    const { code } = req.query; // The temporary code from Meta
+
+    if (!code) {
+        return res.status(400).json({ error: "No authorization code received" });
+    }
+
+    try {
+        // Exchange the 'code' for a Short-Lived User Access Token
+        const response = await axios.get(`https://graph.facebook.com/v18.0/oauth/access_token`, {
+            params: {
+                client_id: process.env.META_APP_ID,
+                client_secret: process.env.META_APP_SECRET,
+                redirect_uri: 'https://myautobot.in/api/auth/callback',
+                code
+            }
+        });
+
+        const userToken = response.data.access_token;
+        
+        // Success! You now have the token to fetch their Instagram/WhatsApp IDs.
+        // We will store this in your DB linked to the current user.
+        console.log("Meta Handshake Complete:", userToken);
+        
+        res.redirect('https://myautobot.in/dashboard/integrations?status=success');
+
+    } catch (error) {
+        console.error("Meta Auth Error:", error.response?.data || error.message);
+        res.redirect('https://myautobot.in/dashboard/integrations?status=error');
+    }
+});
 // --- 1. REGISTER ---
 router.post('/register', async (req, res) => {
   // Normalize email to lowercase
