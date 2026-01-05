@@ -9,66 +9,60 @@ const axios = require('axios');
 
 
 // This handles: GET myautobot.in/api/auth/callback
-// This handles: GET https://myautobot.in/api/auth/callback
 router.get('/callback', async (req, res) => {
-    const { code } = req.query;
-
-    if (!code) return res.status(400).json({ error: "No code received" });
+    const { code, platform } = req.query;
 
     try {
-        // 1. EXCHANGE: Get the permanent System User Token
+        // 1. Exchange for the System User Token
         const tokenRes = await axios.get(`https://graph.facebook.com/v24.0/oauth/access_token`, {
             params: {
                 client_id: process.env.META_APP_ID,
                 client_secret: process.env.META_APP_SECRET,
-                redirect_uri: '', // Must be empty for JS SDK popups
+                redirect_uri: '', 
                 code
             }
         });
 
         const systemToken = tokenRes.data.access_token;
 
-        // 2. DISCOVERY: Get Business ID & Pages/Instagram
-        // We fetch the 'business' object to avoid the "Field nonexisting on User" error
-        const meRes = await axios.get(`https://graph.facebook.com/v24.0/me`, {
+        // 2. Platform-Specific Discovery
+        let igData = null;
+        let waData = null;
+
+        // Fetch Instagram/Pages regardless (common assets)
+        const accountsRes = await axios.get(`https://graph.facebook.com/v24.0/me/accounts`, {
             params: { 
-                fields: 'id,name,business,accounts{instagram_business_account,access_token,name}',
+                fields: 'instagram_business_account,access_token,name',
                 access_token: systemToken 
             }
         });
+        igData = accountsRes.data.data.find(p => p.instagram_business_account);
 
-        const businessId = meRes.data.business?.id;
-        const pages = meRes.data.accounts?.data || [];
-        
-        // 3. DISCOVERY: Get WhatsApp Business Account (WABA)
-        // Instead of querying /me, we query the Business Node directly
-        let wabaId = null;
-        if (businessId) {
-            const wabaRes = await axios.get(`https://graph.facebook.com/v24.0/${businessId}/whatsapp_business_accounts`, {
-                params: { access_token: systemToken }
-            });
-            // We take the first account the user granted access to
-            wabaId = wabaRes.data.data?.[0]?.id;
+        // ONLY attempt WhatsApp discovery if the platform isn't strictly 'instagram'
+        if (platform !== 'instagram') {
+            try {
+                const waRes = await axios.get(`https://graph.facebook.com/v24.0/me/whatsapp_business_accounts`, {
+                    params: { access_token: systemToken }
+                });
+                waData = waRes.data.data?.[0]?.id;
+            } catch (e) {
+                console.log("Skipping WhatsApp discovery for this session.");
+            }
         }
 
-        // 4. IDENTIFY INSTAGRAM ASSET
-        const igAccount = pages.find(p => p.instagram_business_account);
-
-        // 5. UPDATE DATABASE
-        // We store these IDs so your Webhook knows which LLM to trigger
+        // 3. Save to User Profile
         await User.findByIdAndUpdate(req.user.id, {
-            instagramToken: igAccount?.access_token || systemToken,
-            instagramBusinessId: igAccount?.instagram_business_account?.id,
-            whatsappBusinessId: wabaId,
-            instagramEnabled: !!igAccount,
-            whatsappEnabled: !!wabaId
+            instagramToken: igData?.access_token || systemToken,
+            instagramBusinessId: igData?.instagram_business_account?.id,
+            whatsappBusinessId: waData,
+            instagramEnabled: !!igData,
+            whatsappEnabled: !!waData
         });
 
         res.redirect('https://myautobot.in/dashboard/integrations?status=success');
 
     } catch (error) {
-        // Detailed logging to catch the exact Meta subcode
-        console.error("Meta Discovery Crash:", error.response?.data || error.message);
+        console.error("Discovery Error:", error.response?.data || error.message);
         res.redirect('https://myautobot.in/dashboard/integrations?status=error');
     }
 });
