@@ -8,18 +8,18 @@ const User = require('../models/User');
 const axios = require('axios');
 
 
-// This handles: GET myautobot.in/api/auth/callback
 router.get('/callback', async (req, res) => {
     const { code, platform } = req.query;
+    const REDIRECT_URI = 'https://myautobot.in/api/auth/callback';
 
     try {
-        // 1. Exchange for the System User Token
         const tokenRes = await axios.get(`https://graph.facebook.com/v24.0/oauth/access_token`, {
             params: {
                 client_id: process.env.META_APP_ID,
                 client_secret: process.env.META_APP_SECRET,
-                redirect_uri: '', 
-                code
+                code: code,
+                // MUST match the frontend string exactly
+                redirect_uri: REDIRECT_URI 
             }
         });
 
