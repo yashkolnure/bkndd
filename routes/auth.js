@@ -4,16 +4,18 @@ const axios = require("axios");
 const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+
 const User = require("../models/User");
 const sendEmail = require("../utils/sendEmail");
+const sendReply = require("../utils/sendReply");
 
 /* =========================================================
-   META OAUTH CALLBACK (JS SDK SAFE)
+   META OAUTH CALLBACK (JS SDK SAFE, PRODUCTION READY)
 ========================================================= */
 router.get("/callback", async (req, res) => {
-  const { code, platform } = req.query;
+  const { code, platform, state: userId } = req.query;
 
-  if (!code || !platform) {
+  if (!code || !platform || !userId) {
     return res.redirect(
       "https://myautobot.in/dashboard/integrations?status=missing_params"
     );
@@ -32,7 +34,7 @@ router.get("/callback", async (req, res) => {
           client_id: process.env.META_APP_ID,
           client_secret: process.env.META_APP_SECRET,
           code,
-          redirect_uri: "" // ✅ REQUIRED FOR JS SDK
+          redirect_uri: "" // REQUIRED FOR JS SDK
         }
       }
     );
@@ -47,7 +49,7 @@ router.get("/callback", async (req, res) => {
       {
         params: {
           fields:
-            "name,access_token,instagram_business_account,whatsapp_business_account",
+            "name,instagram_business_account,whatsapp_business_account",
           access_token: userAccessToken
         }
       }
@@ -67,37 +69,26 @@ router.get("/callback", async (req, res) => {
     }
 
     /* -----------------------------------------------------
-       3. GENERATE SYSTEM USER TOKEN (NON-EXPIRING)
-       (RECOMMENDED BY META FOR SAAS)
+       3. USE PRE-GENERATED SYSTEM USER TOKEN (NON-EXPIRING)
+       META RECOMMENDED FOR SAAS
     ----------------------------------------------------- */
-    const systemTokenRes = await axios.post(
-      `https://graph.facebook.com/v24.0/${process.env.META_SYSTEM_USER_ID}/access_tokens`,
-      null,
-      {
-        params: {
-          app_id: process.env.META_APP_ID,
-          app_secret: process.env.META_APP_SECRET
-        }
-      }
-    );
+    const systemUserToken = process.env.META_SYSTEM_USER_TOKEN;
 
-    const systemUserToken = systemTokenRes.data.access_token;
+    if (!systemUserToken) {
+      throw new Error("META_SYSTEM_USER_TOKEN missing");
+    }
 
     /* -----------------------------------------------------
        4. SAVE TO USER PROFILE
     ----------------------------------------------------- */
-    await User.findByIdAndUpdate(
-      req.user.id,
-      {
-        instagramEnabled: !!instagramBusinessId,
-        whatsappEnabled: !!whatsappBusinessId,
-        instagramBusinessId,
-        whatsappBusinessId,
-        instagramToken: systemUserToken,
-        whatsappToken: systemUserToken
-      },
-      { new: true }
-    );
+    await User.findByIdAndUpdate(userId, {
+      instagramEnabled: !!instagramBusinessId,
+      whatsappEnabled: !!whatsappBusinessId,
+      instagramBusinessId,
+      whatsappBusinessId,
+      instagramToken: systemUserToken,
+      whatsappToken: systemUserToken
+    });
 
     return res.redirect(
       "https://myautobot.in/dashboard/integrations?status=success"
@@ -122,10 +113,7 @@ router.get("/webhook", (req, res) => {
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  if (
-    mode === "subscribe" &&
-    token === process.env.META_VERIFY_TOKEN
-  ) {
+  if (mode === "subscribe" && token === process.env.META_VERIFY_TOKEN) {
     console.log("META WEBHOOK VERIFIED");
     return res.status(200).send(challenge);
   }
@@ -134,7 +122,7 @@ router.get("/webhook", (req, res) => {
 });
 
 /* =========================================================
-   META WEBHOOK RECEIVER (IG + WHATSAPP)
+   META WEBHOOK RECEIVER (INSTAGRAM + WHATSAPP)
 ========================================================= */
 router.post("/webhook", async (req, res) => {
   const body = req.body;
@@ -183,7 +171,7 @@ router.post("/webhook", async (req, res) => {
        SEND TO LOCAL LLM (OLLAMA)
     ----------------------------------------------------- */
     const aiRes = await axios.post(
-      "http://YOUR_VPS_IP:11434/api/generate",
+      process.env.OLLAMA_URL || "http://127.0.0.1:11434/api/generate",
       {
         model: "llama3.2",
         prompt: `User: ${messageText}`,
@@ -257,10 +245,10 @@ router.post("/login", async (req, res) => {
 
   try {
     const user = await User.findOne({ email });
-    if (!user) return res.status(400).json({ message: "Invalid" });
+    if (!user) return res.status(400).json({ message: "Invalid credentials" });
 
     const match = await bcrypt.compare(password, user.password);
-    if (!match) return res.status(400).json({ message: "Invalid" });
+    if (!match) return res.status(400).json({ message: "Invalid credentials" });
 
     const token = jwt.sign(
       { id: user._id },
@@ -278,7 +266,7 @@ router.post("/login", async (req, res) => {
 });
 
 /* =========================================================
-   PASSWORD RESET (OPTIONAL)
+   PASSWORD RESET
 ========================================================= */
 router.post("/forgot-password", async (req, res) => {
   const email = req.body.email.toLowerCase().trim();
@@ -297,7 +285,7 @@ router.post("/forgot-password", async (req, res) => {
 
   await sendEmail({
     email,
-    subject: "Reset Password",
+    subject: "MyAutoBot Password Reset",
     html: `<a href="${resetUrl}">Reset Password</a>`
   });
 
