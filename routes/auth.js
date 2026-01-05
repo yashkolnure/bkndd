@@ -9,71 +9,66 @@ const axios = require('axios');
 
 
 // This handles: GET myautobot.in/api/auth/callback
+// This handles: GET https://myautobot.in/api/auth/callback
 router.get('/callback', async (req, res) => {
-    const { code } = req.query; // The temporary code from Meta
+    const { code, platform } = req.query; 
 
     if (!code) {
         return res.status(400).json({ error: "No authorization code received" });
     }
 
     try {
-    // 1. Exchange 'code' for Short-Lived Token (Your current step)
-    const tokenRes = await axios.get(`https://graph.facebook.com/v18.0/oauth/access_token`, {
-        params: {
-            client_id: process.env.META_APP_ID,
-            client_secret: process.env.META_APP_SECRET,
-            redirect_uri: 'https://myautobot.in/api/auth/callback',
-            code
-        }
-    });
-    const shortToken = tokenRes.data.access_token;
+        // 1. Exchange 'code' for a System User Access Token
+        // FIX: redirect_uri must be an empty string when using the JS SDK popup
+        const tokenRes = await axios.get(`https://graph.facebook.com/v24.0/oauth/access_token`, {
+            params: {
+                client_id: process.env.META_APP_ID,
+                client_secret: process.env.META_APP_SECRET,
+                redirect_uri: '', 
+                code: code
+            }
+        });
 
-    // 2. UPGRADE to Long-Lived Token (60 Days)
-    // This ensures your bot doesn't stop working after 2 hours!
-    const longLivedRes = await axios.get(`https://graph.facebook.com/v18.0/oauth/access_token`, {
-        params: {
-            grant_type: 'fb_exchange_token',
-            client_id: process.env.META_APP_ID,
-            client_secret: process.env.META_APP_SECRET,
-            fb_exchange_token: shortToken
-        }
-    });
-    const finalToken = longLivedRes.data.access_token;
+        // This is your permanent token from Configuration 1510513603582692
+        const systemUserToken = tokenRes.data.access_token;
 
-    // 3. AUTOMATIC ACCOUNT DISCOVERY
-    // Fetch Facebook Pages + Linked Instagram Accounts
-    const accountsRes = await axios.get(`https://graph.facebook.com/v18.0/me/accounts`, {
-        params: { 
-            fields: 'instagram_business_account,access_token,name',
-            access_token: finalToken 
-        }
-    });
+        // 2. AUTOMATIC ACCOUNT DISCOVERY
+        // We use the systemUserToken to find the assets the user just granted
+        const accountsRes = await axios.get(`https://graph.facebook.com/v24.0/me/accounts`, {
+            params: { 
+                fields: 'instagram_business_account,access_token,name',
+                access_token: systemUserToken 
+            }
+        });
 
-    // Fetch WhatsApp Business Accounts
-    const waRes = await axios.get(`https://graph.facebook.com/v18.0/me/whatsapp_business_accounts`, {
-        params: { access_token: finalToken }
-    });
+        const waRes = await axios.get(`https://graph.facebook.com/v24.0/me/whatsapp_business_accounts`, {
+            params: { access_token: systemUserToken }
+        });
 
-    // 4. PICK THE FIRST ACTIVE ACCOUNTS
-    const igAccount = accountsRes.data.data.find(page => page.instagram_business_account);
-    const waAccount = waRes.data.data[0]; // Gets the first WhatsApp Business Account
+        // 3. IDENTIFY THE ASSETS
+        const igAccount = accountsRes.data.data.find(page => page.instagram_business_account);
+        const waAccount = waRes.data.data[0];
 
-    // 5. UPDATE DATABASE
-    // We link these IDs to the user so your Webhook knows who is who
-    await User.findByIdAndUpdate(req.user.id, {
-        instagramToken: igAccount?.access_token, // Page-specific token for replies
-        instagramBusinessId: igAccount?.instagram_business_account?.id,
-        whatsappBusinessId: waAccount?.id,
-        instagramEnabled: !!igAccount,
-        whatsappEnabled: !!waAccount
-    });
+        // 4. PERSIST TO DATABASE
+        // Since you selected "Token will never expire", this setup is set-and-forget.
+        await User.findByIdAndUpdate(req.user.id, {
+            // For IG, we save the Page Access Token for messaging
+            instagramToken: igAccount?.access_token || systemUserToken, 
+            instagramBusinessId: igAccount?.instagram_business_account?.id,
+            whatsappBusinessId: waAccount?.id,
+            instagramEnabled: !!igAccount,
+            whatsappEnabled: !!waAccount,
+            // Tagging the platform helps UI state, but discovery finds both anyway
+            lastConnectedPlatform: platform 
+        });
 
-    res.redirect('https://myautobot.in/dashboard/integrations?status=success');
+        res.redirect('https://myautobot.in/dashboard/integrations?status=success');
 
-} catch (error) {
-    console.error("Meta Discovery Error:", error.response?.data || error.message);
-    res.redirect('https://myautobot.in/dashboard/integrations?status=error');
-}
+    } catch (error) {
+        // Log the deep error for debugging
+        console.error("Meta Discovery Error Details:", error.response?.data || error.message);
+        res.redirect('https://myautobot.in/dashboard/integrations?status=error');
+    }
 });
 
 // GET myautobot.in/api/auth/webhook
