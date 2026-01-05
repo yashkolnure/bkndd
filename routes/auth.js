@@ -10,7 +10,7 @@ const axios = require('axios');
 
 router.get('/callback', async (req, res) => {
     const { code, platform } = req.query;
-    const REDIRECT_URI = 'https://myautobot.in/api/auth/callback';
+    const REDIRECT_URI = 'https://myautobot.in/api/auth/callback/';
 
     try {
         const tokenRes = await axios.get(`https://graph.facebook.com/v24.0/oauth/access_token`, {
