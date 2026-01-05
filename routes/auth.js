@@ -11,62 +11,64 @@ const axios = require('axios');
 // This handles: GET myautobot.in/api/auth/callback
 // This handles: GET https://myautobot.in/api/auth/callback
 router.get('/callback', async (req, res) => {
-    const { code, platform } = req.query; 
+    const { code } = req.query;
 
-    if (!code) {
-        return res.status(400).json({ error: "No authorization code received" });
-    }
+    if (!code) return res.status(400).json({ error: "No code received" });
 
     try {
-        // 1. Exchange 'code' for a System User Access Token
-        // FIX: redirect_uri must be an empty string when using the JS SDK popup
+        // 1. EXCHANGE: Get the permanent System User Token
         const tokenRes = await axios.get(`https://graph.facebook.com/v24.0/oauth/access_token`, {
             params: {
                 client_id: process.env.META_APP_ID,
                 client_secret: process.env.META_APP_SECRET,
-                redirect_uri: '', 
-                code: code
+                redirect_uri: '', // Must be empty for JS SDK popups
+                code
             }
         });
 
-        // This is your permanent token from Configuration 1510513603582692
-        const systemUserToken = tokenRes.data.access_token;
+        const systemToken = tokenRes.data.access_token;
 
-        // 2. AUTOMATIC ACCOUNT DISCOVERY
-        // We use the systemUserToken to find the assets the user just granted
-        const accountsRes = await axios.get(`https://graph.facebook.com/v24.0/me/accounts`, {
+        // 2. DISCOVERY: Get Business ID & Pages/Instagram
+        // We fetch the 'business' object to avoid the "Field nonexisting on User" error
+        const meRes = await axios.get(`https://graph.facebook.com/v24.0/me`, {
             params: { 
-                fields: 'instagram_business_account,access_token,name',
-                access_token: systemUserToken 
+                fields: 'id,name,business,accounts{instagram_business_account,access_token,name}',
+                access_token: systemToken 
             }
         });
 
-        const waRes = await axios.get(`https://graph.facebook.com/v24.0/me/whatsapp_business_accounts`, {
-            params: { access_token: systemUserToken }
-        });
+        const businessId = meRes.data.business?.id;
+        const pages = meRes.data.accounts?.data || [];
+        
+        // 3. DISCOVERY: Get WhatsApp Business Account (WABA)
+        // Instead of querying /me, we query the Business Node directly
+        let wabaId = null;
+        if (businessId) {
+            const wabaRes = await axios.get(`https://graph.facebook.com/v24.0/${businessId}/whatsapp_business_accounts`, {
+                params: { access_token: systemToken }
+            });
+            // We take the first account the user granted access to
+            wabaId = wabaRes.data.data?.[0]?.id;
+        }
 
-        // 3. IDENTIFY THE ASSETS
-        const igAccount = accountsRes.data.data.find(page => page.instagram_business_account);
-        const waAccount = waRes.data.data[0];
+        // 4. IDENTIFY INSTAGRAM ASSET
+        const igAccount = pages.find(p => p.instagram_business_account);
 
-        // 4. PERSIST TO DATABASE
-        // Since you selected "Token will never expire", this setup is set-and-forget.
+        // 5. UPDATE DATABASE
+        // We store these IDs so your Webhook knows which LLM to trigger
         await User.findByIdAndUpdate(req.user.id, {
-            // For IG, we save the Page Access Token for messaging
-            instagramToken: igAccount?.access_token || systemUserToken, 
+            instagramToken: igAccount?.access_token || systemToken,
             instagramBusinessId: igAccount?.instagram_business_account?.id,
-            whatsappBusinessId: waAccount?.id,
+            whatsappBusinessId: wabaId,
             instagramEnabled: !!igAccount,
-            whatsappEnabled: !!waAccount,
-            // Tagging the platform helps UI state, but discovery finds both anyway
-            lastConnectedPlatform: platform 
+            whatsappEnabled: !!wabaId
         });
 
         res.redirect('https://myautobot.in/dashboard/integrations?status=success');
 
     } catch (error) {
-        // Log the deep error for debugging
-        console.error("Meta Discovery Error Details:", error.response?.data || error.message);
+        // Detailed logging to catch the exact Meta subcode
+        console.error("Meta Discovery Crash:", error.response?.data || error.message);
         res.redirect('https://myautobot.in/dashboard/integrations?status=error');
     }
 });
