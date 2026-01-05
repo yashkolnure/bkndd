@@ -16,6 +16,8 @@ router.get("/callback", async (req, res) => {
   const { code, platform, state: userId } = req.query;
 
   if (!code || !platform || !userId) {
+    console.error("META CALLBACK MISSING PARAMS:", req.query);
+    console.log("Expected " + { code, platform, userId });
     return res.redirect(
       "https://myautobot.in/dashboard/integrations?status=missing_params"
     );
