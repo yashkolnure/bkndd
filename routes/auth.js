@@ -242,28 +242,49 @@ router.post("/register", async (req, res) => {
    AUTH: LOGIN
 ========================================================= */
 router.post("/login", async (req, res) => {
-  const email = req.body.email.toLowerCase().trim();
+  // 1. Sanitize input
+  const email = req.body.email?.toLowerCase().trim();
   const { password } = req.body;
 
+  if (!email || !password) {
+    return res.status(400).json({ message: "Email and password are required" });
+  }
+
   try {
+    // 2. Locate user
     const user = await User.findOne({ email });
-    if (!user) return res.status(400).json({ message: "Invalid credentials" });
+    if (!user) {
+      // Use 401 for authentication issues
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
 
+    // 3. Verify password
     const match = await bcrypt.compare(password, user.password);
-    if (!match) return res.status(400).json({ message: "Invalid credentials" });
+    if (!match) {
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
 
+    // 4. Generate Neural Access Token
     const token = jwt.sign(
       { id: user._id },
       process.env.JWT_SECRET,
       { expiresIn: "1d" }
     );
 
+    // 5. Send optimized response
     res.json({
       token,
-      user: { id: user._id, name: user.name }
+      user: { 
+        id: user._id, 
+        name: user.name,
+        email: user.email // Helpful to have in frontend state
+      }
     });
-  } catch {
-    res.status(500).json({ message: "Login failed" });
+
+  } catch (error) {
+    // Log the actual error for the developer, but hide details from the user
+    console.error("Critical Login Error:", error);
+    res.status(500).json({ message: "Internal server error. Please try again later." });
   }
 });
 
