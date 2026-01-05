@@ -4,62 +4,78 @@ const BotConfig = require('../models/BotConfig');
 const axios = require('axios');
 const { decrypt } = require('../utils/encryption'); // You'll need a decryption helper
 
+// GET: https://myautobot.in/api/webhooks/meta
 router.get('/meta', (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
 
-  if (mode && token === process.env.META_VERIFY_TOKEN) {
-    res.status(200).send(challenge);
-  } else {
-    res.sendStatus(403);
-  }
+    // This 'verifyToken' must match the one you set in your Dashboard and React frontend
+    const verifyToken = process.env.WEBHOOK_VERIFY_TOKEN;
+
+    if (mode && token) {
+        if (mode === 'subscribe' && token === verifyToken) {
+            console.log('WEBHOOK_VERIFIED');
+            return res.status(200).send(challenge);
+        } else {
+            return res.sendStatus(403);
+        }
+    }
 });
 
+// POST: https://myautobot.in/api/webhooks/meta
 router.post('/meta', async (req, res) => {
-    const { botId } = req.query; // Your users use: .../api/webhooks/meta?botId=USER_ID
     const body = req.body;
 
-    // 1. Validate this is a message event
-    const messageObj = body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-    if (!messageObj || !messageObj.text) return res.sendStatus(200);
+    // 1. Immediately acknowledge receipt to Meta (prevents retry loops)
+    res.status(200).send('EVENT_RECEIVED');
 
     try {
-        // 2. Fetch this specific user's configuration
-        const config = await BotConfig.findOne({ user: botId });
-        if (!config || !config.whatsappToken) return res.sendStatus(200);
+        let messageText = '';
+        let senderId = '';
+        let platform = '';
 
-        const customerMsg = messageObj.text.body;
-        const customerId = messageObj.from; // Phone number or IG ID
-
-        // 3. Forward to the Self-Hosted LLM on your VPS
-        // We pass the unique 'instructions' the user wrote during onboarding
-        const aiResponse = await axios.post('http://YOUR_VPS_IP:8000/v1/chat/completions', {
-            model: "llama-3.2-1b",
-            messages: [
-                { role: "system", content: config.instructions },
-                { role: "user", content: customerMsg }
-            ]
-        });
-
-        const botReply = aiResponse.data.choices[0].message.content;
-
-        // 4. Send the AI response back to the customer via Meta
-        await axios.post(`https://graph.facebook.com/v17.0/${config.phoneNumberId}/messages`, {
-            messaging_product: "whatsapp",
-            to: customerId,
-            text: { body: botReply }
-        }, {
-            headers: { 
-                Authorization: `Bearer ${decrypt(config.whatsappToken)}`,
-                'Content-Type': 'application/json'
+        // --- DETECT WHATSAPP DATA ---
+        if (body.object === 'whatsapp_business_account') {
+            platform = 'whatsapp';
+            const entry = body.entry?.[0]?.changes?.[0]?.value;
+            const message = entry?.messages?.[0];
+            
+            if (message?.type === 'text') {
+                messageText = message.text.body;
+                senderId = message.from; // User's phone number
             }
+        }
+
+        // --- DETECT INSTAGRAM DATA ---
+        else if (body.object === 'instagram') {
+            platform = 'instagram';
+            const messaging = body.entry?.[0]?.messaging?.[0];
+            
+            if (messaging?.message?.text) {
+                messageText = messaging.message.text;
+                senderId = messaging.sender.id; // User's scoped ID
+            }
+        }
+
+        if (!messageText || !senderId) return;
+
+        // 2. FETCH USER CONFIG FROM DATABASE
+        // You need the stored Token to reply
+        const botOwner = await User.findOne({ 
+            $or: [{ whatsappBusinessId: body.entry[0].id }, { instagramBusinessId: body.entry[0].id }] 
         });
 
-    } catch (err) {
-        console.error("SaaS Webhook Error:", err.message);
-    }
+        if (!botOwner) return console.error("No bot owner found for this ID");
 
-    // Always send 200 back to Meta so they don't keep retrying the same message
-    res.sendStatus(200);
+        // 3. CALL YOUR LLM (AI LOGIC)
+        // const aiResponse = await callMyLLM(messageText, senderId);
+        const aiResponse = `Hello from MyAutoBot! You said: ${messageText}`;
+
+        // 4. SEND REPLY BACK TO USER
+        await sendMetaReply(platform, senderId, aiResponse, botOwner);
+
+    } catch (error) {
+        console.error("Webhook Processing Error:", error.message);
+    }
 });
