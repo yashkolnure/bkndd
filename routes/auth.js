@@ -12,58 +12,75 @@ const sendReply = require("../utils/sendReply");
 ========================================================= */
 const express = require("express");
 const router = express.Router();
-
-/* =====================================================
-   META CONNECT (EMBEDDED SIGNUP – OFFICIAL)
-===================================================== */
 router.post("/meta-connect", async (req, res) => {
-  const { platform, userId } = req.body;
+  const { userId, userAccessToken } = req.body;
 
-  console.log("META CONNECT PAYLOAD:", req.body);
-
-  if (!platform || !userId) {
+  if (!userId || !userAccessToken) {
     return res.status(400).json({ message: "Missing params" });
   }
 
   try {
-    const SYSTEM_TOKEN = process.env.META_SYSTEM_USER_TOKEN;
-
-    /* 1. Discover Assets */
-    const accountsRes = await axios.get(
-      "https://graph.facebook.com/v24.0/me/accounts",
+    // 1️⃣ Get pages user manages
+    const pagesRes = await axios.get(
+      "https://graph.facebook.com/v19.0/me/accounts",
       {
         params: {
-          fields: "instagram_business_account,whatsapp_business_account",
-          access_token: SYSTEM_TOKEN
+          access_token: userAccessToken
         }
       }
     );
 
-    let instagramBusinessId = null;
-    let whatsappBusinessId = null;
+    const pages = pagesRes.data.data || [];
 
-    for (const page of accountsRes.data.data || []) {
-      if (page.instagram_business_account) {
-        instagramBusinessId = page.instagram_business_account.id;
-      }
-      if (page.whatsapp_business_account) {
-        whatsappBusinessId = page.whatsapp_business_account.id;
+    if (!pages.length) {
+      return res.status(400).json({
+        message: "No Facebook Pages found. Please connect a Page first."
+      });
+    }
+
+    // 2️⃣ Find page linked to Instagram Business Account
+    let selectedPage = null;
+
+    for (const page of pages) {
+      const igRes = await axios.get(
+        `https://graph.facebook.com/v19.0/${page.id}`,
+        {
+          params: {
+            fields: "instagram_business_account",
+            access_token: page.access_token
+          }
+        }
+      );
+
+      if (igRes.data.instagram_business_account) {
+        selectedPage = {
+          pageId: page.id,
+          pageToken: page.access_token, // 🔥 EAAG
+          instagramBusinessId: igRes.data.instagram_business_account.id
+        };
+        break;
       }
     }
 
-    /* 2. Save */
+    if (!selectedPage) {
+      return res.status(400).json({
+        message: "No Instagram Business Account connected to your Pages."
+      });
+    }
+
+    // 3️⃣ SAVE ONLY CORRECT VALUES
     await User.findByIdAndUpdate(userId, {
-      instagramEnabled: !!instagramBusinessId,
-      whatsappEnabled: !!whatsappBusinessId,
-      instagramBusinessId,
-      whatsappBusinessId,
-      instagramToken: SYSTEM_TOKEN,
-      whatsappToken: SYSTEM_TOKEN
+      instagramEnabled: true,
+      instagramBusinessId: selectedPage.instagramBusinessId,
+      instagramToken: selectedPage.pageToken // 🔥 EAAG TOKEN
     });
 
-    return res.json({ success: true });
+    return res.json({
+      success: true,
+      instagramBusinessId: selectedPage.instagramBusinessId
+    });
   } catch (err) {
-    console.error("META CONNECT ERROR FULL:", err.response?.data || err.message);
+    console.error("Meta connect error:", err.response?.data || err.message);
     return res.status(500).json({ message: "Meta connect failed" });
   }
 });
