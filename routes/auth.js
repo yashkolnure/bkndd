@@ -285,6 +285,76 @@ router.post("/login", async (req, res) => {
     res.status(500).json({ message: "Internal server link failure" });
   }
 });
+
+
+
+router.post("/meta-connect", async (req, res) => {
+  const { code, platform, userId } = req.body;
+
+  if (!code || !platform || !userId) {
+    return res.status(400).json({ message: "Missing params" });
+  }
+
+  try {
+    // 1. Exchange code (JS SDK SAFE)
+    const tokenRes = await axios.post(
+      "https://graph.facebook.com/v24.0/oauth/access_token",
+      null,
+      {
+        params: {
+          client_id: process.env.META_APP_ID,
+          client_secret: process.env.META_APP_SECRET,
+          code,
+          redirect_uri: "" // MUST be empty
+        }
+      }
+    );
+
+    const userAccessToken = tokenRes.data.access_token;
+
+    // 2. Discover assets
+    const accountsRes = await axios.get(
+      "https://graph.facebook.com/v24.0/me/accounts",
+      {
+        params: {
+          fields: "instagram_business_account,whatsapp_business_account",
+          access_token: userAccessToken
+        }
+      }
+    );
+
+    let instagramBusinessId = null;
+    let whatsappBusinessId = null;
+
+    for (const page of accountsRes.data.data || []) {
+      if (platform === "instagram" && page.instagram_business_account) {
+        instagramBusinessId = page.instagram_business_account.id;
+      }
+      if (platform === "whatsapp" && page.whatsapp_business_account) {
+        whatsappBusinessId = page.whatsapp_business_account.id;
+      }
+    }
+
+    // 3. Save (use SYSTEM USER TOKEN)
+    await User.findByIdAndUpdate(userId, {
+      instagramEnabled: !!instagramBusinessId,
+      whatsappEnabled: !!whatsappBusinessId,
+      instagramBusinessId,
+      whatsappBusinessId,
+      instagramToken: process.env.META_SYSTEM_USER_TOKEN,
+      whatsappToken: process.env.META_SYSTEM_USER_TOKEN
+    });
+
+    return res.json({ success: true });
+  } catch (error) {
+    console.error(
+      "META CONNECT ERROR:",
+      error.response?.data || error.message
+    );
+    return res.status(500).json({ message: "Meta connect failed" });
+  }
+});
+
 /* =========================================================
    PASSWORD RESET
 ========================================================= */
