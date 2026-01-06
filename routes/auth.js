@@ -241,53 +241,50 @@ router.post("/register", async (req, res) => {
 /* =========================================================
    AUTH: LOGIN
 ========================================================= */
+// routes/auth.js
 router.post("/login", async (req, res) => {
-  // 1. Sanitize input
+  // 1. Sanitize input to match registration logic
   const email = req.body.email?.toLowerCase().trim();
   const { password } = req.body;
 
   if (!email || !password) {
-    return res.status(400).json({ message: "Email and password are required" });
+    return res.status(400).json({ message: "Email and password required" });
   }
 
   try {
-    // 2. Locate user
+    // 2. Find user and include necessary fields
     const user = await User.findOne({ email });
     if (!user) {
-      // Use 401 for authentication issues
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
-    // 3. Verify password
-    const match = await bcrypt.compare(password, user.password);
-    if (!match) {
+    // 3. Compare hash
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
-    // 4. Generate Neural Access Token
+    // 4. Sign JWT
     const token = jwt.sign(
       { id: user._id },
       process.env.JWT_SECRET,
       { expiresIn: "1d" }
     );
 
-    // 5. Send optimized response
-    res.json({
+    // 5. Response structure (Unified for Frontend)
+    res.status(200).json({
       token,
-      user: { 
-        id: user._id, 
+      user: {
+        id: user._id.toString(), // Explicitly convert to string
         name: user.name,
-        email: user.email // Helpful to have in frontend state
+        email: user.email
       }
     });
-
   } catch (error) {
-    // Log the actual error for the developer, but hide details from the user
-    console.error("Critical Login Error:", error);
-    res.status(500).json({ message: "Internal server error. Please try again later." });
+    console.error("Login Protocol Error:", error);
+    res.status(500).json({ message: "Internal server link failure" });
   }
 });
-
 /* =========================================================
    PASSWORD RESET
 ========================================================= */
