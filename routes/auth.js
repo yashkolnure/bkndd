@@ -295,7 +295,7 @@ router.post("/reset-password/:token", async (req, res) => {
 });
 
 // This MUST be a .get() route
-app.get('/webhook/instagram', (req, res) => {
+router.get('/webhook/instagram', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
