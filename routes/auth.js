@@ -4,7 +4,7 @@ const axios = require("axios");
 const User = require("../models/User");
 
 /* ================= META CONNECT ================= */
-router.post("/meta-connect", async (req, res) => {
+router.post("/callback", async (req, res) => {
   const { platform, userId } = req.body;
 
   console.log("META CONNECT PAYLOAD:", req.body);
