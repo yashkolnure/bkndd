@@ -123,7 +123,7 @@ router.post("/register", async (req, res) => {
 ========================================================= */
 // routes/auth.js
 
-app.get("/webhooks/instagram", (req, res) => {
+router.get("/webhooks/instagram", (req, res) => {
   const VERIFY_TOKEN = "my_verify_token";
 
   const mode = req.query["hub.mode"];
@@ -138,7 +138,7 @@ app.get("/webhooks/instagram", (req, res) => {
 });
 
 
-app.post("/webhooks/instagram", (req, res) => {
+router.post("/webhooks/instagram", (req, res) => {
   console.log("IG Webhook:", JSON.stringify(req.body, null, 2));
   res.sendStatus(200);
 });
