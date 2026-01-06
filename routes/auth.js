@@ -289,6 +289,12 @@ router.post("/login", async (req, res) => {
 
 
 router.post("/meta-connect", async (req, res) => {
+  console.log("META CONNECT PAYLOAD:", {
+  code: !!code,
+  platform,
+  userId,
+});
+
   const { code, platform, userId } = req.body;
 
   if (!code || !platform || !userId) {
