@@ -1,56 +1,28 @@
 const axios = require("axios");
 
-/**
- * Send message reply to WhatsApp or Instagram
- * @param {string} recipientId - User ID (WhatsApp phone or IG user ID)
- * @param {string} message - Text to send
- * @param {string} token - System User Access Token
- */
-module.exports = async function sendReply(recipientId, message, token) {
+module.exports = async function sendReply({
+  igBusinessId,
+  pageToken,
+  recipientId,
+  text
+}) {
   try {
-    /* ---------------------------------------------
-       WHATSAPP CLOUD API (Phone number IDs are numeric)
-    --------------------------------------------- */
-    if (/^\d+$/.test(recipientId)) {
-      // WhatsApp Cloud API
-      await axios.post(
-        `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
-        {
-          messaging_product: "whatsapp",
-          to: recipientId,
-          text: { body: message }
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json"
-          }
-        }
-      );
-
-      return;
-    }
-
-    /* ---------------------------------------------
-       INSTAGRAM DM API
-    --------------------------------------------- */
-    await axios.post(
-      `https://graph.facebook.com/v19.0/me/messages`,
+    const res = await axios.post(
+      `https://graph.facebook.com/v19.0/${igBusinessId}/messages`,
       {
         recipient: { id: recipientId },
-        message: { text: message }
+        message: { text }
       },
       {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json"
-        }
+        params: { access_token: pageToken }
       }
     );
-  } catch (error) {
+
+    console.log("📤 IG reply success:", res.data);
+  } catch (err) {
     console.error(
-      "SEND REPLY ERROR:",
-      error.response?.data || error.message
+      "❌ IG reply failed:",
+      err.response?.data || err.message
     );
   }
 };

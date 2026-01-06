@@ -343,45 +343,57 @@ router.post("/webhook/instagram", async (req, res) => {
   }
 
   for (const entry of body.entry || []) {
-    // ✅ Instagram may send messaging OR changes
     const events = entry.messaging || [];
 
     for (const event of events) {
-      console.log("Instagram Messaging Event:", event);
+      console.log("📩 IG EVENT:", event);
 
-      // 1️⃣ Ignore echoes (your own replies)
-      if (event.message?.is_echo) continue;
+      // 1️⃣ Ignore echoes
+      if (event.message?.is_echo) {
+        console.log("↩️ Echo ignored");
+        continue;
+      }
 
-      // 2️⃣ Only handle text messages
-      if (!event.message?.text) continue;
+      // 2️⃣ Only text messages
+      if (!event.message?.text) {
+        console.log("⚠️ Non-text message ignored");
+        continue;
+      }
 
       const senderId = event.sender.id;
       const igBusinessId = event.recipient.id;
-      const text = event.message.text;
 
-      // 3️⃣ Find user safely
+      console.log("🆔 IDs:", { senderId, igBusinessId });
+
+      // 3️⃣ Find user
       const user = await User.findOne({
         instagramBusinessId: igBusinessId,
         instagramEnabled: true
       });
 
       if (!user) {
-        console.log("⚠️ No user found for IG:", igBusinessId);
+        console.log("❌ No user found for IG:", igBusinessId);
         continue;
       }
 
-      // 4️⃣ Send auto reply
+      console.log("✅ User found:", user._id);
+      console.log("🔑 Token starts with:", user.instagramToken?.slice(0, 10));
+
+      // 4️⃣ STATIC AUTO REPLY
       await sendReply({
-        igBusinessId: user.instagramBusinessId,
+        igBusinessId,
         pageToken: user.instagramToken,
         recipientId: senderId,
-        text: "👋 Hi! Thanks for messaging us."
+        text: "👋 Hi! This is a static auto-reply test from MyAutoBot."
       });
+
+      console.log("✅ Auto-reply attempted");
     }
   }
 
   return res.sendStatus(200);
 });
+
 
 
 module.exports = router;
