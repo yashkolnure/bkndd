@@ -122,6 +122,27 @@ router.post("/register", async (req, res) => {
    AUTH: LOGIN
 ========================================================= */
 // routes/auth.js
+
+app.get("/webhooks/instagram", (req, res) => {
+  const VERIFY_TOKEN = "my_verify_token";
+
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    return res.status(200).send(challenge);
+  }
+
+  return res.sendStatus(403);
+});
+
+
+app.post("/webhooks/instagram", (req, res) => {
+  console.log("IG Webhook:", JSON.stringify(req.body, null, 2));
+  res.sendStatus(200);
+});
+
 router.post("/login", async (req, res) => {
   // 1. Sanitize input to match registration logic
   const email = req.body.email?.toLowerCase().trim();
