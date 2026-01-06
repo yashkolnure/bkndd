@@ -353,12 +353,15 @@ router.post("/meta-connect", async (req, res) => {
 
     return res.json({ success: true });
   } catch (error) {
-    console.error(
-      "META CONNECT ERROR:",
-      error.response?.data || error.message
-    );
-    return res.status(500).json({ message: "Meta connect failed" });
-  }
+  console.error(
+    "META CONNECT ERROR FULL:",
+    error.response?.data || error.message
+  );
+  return res.status(500).json({
+    error: error.response?.data || error.message,
+  });
+}
+
 });
 
 /* =========================================================
