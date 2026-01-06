@@ -294,6 +294,25 @@ router.post("/reset-password/:token", async (req, res) => {
   res.json({ message: "Password updated" });
 });
 
+// This MUST be a .get() route
+app.get('/webhook/instagram', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  // This must match exactly what is in your Meta dashboard image
+  const MY_VERIFY_TOKEN = "my_autobot_handshake_ep3us6";
+
+  if (mode === 'subscribe' && token === MY_VERIFY_TOKEN) {
+    console.log('✅ Webhook Verified Successfully!');
+    // Send ONLY the challenge string back with a 200 status
+    return res.status(200).send(challenge);
+  } else {
+    console.error('❌ Verification Failed: Token Mismatch');
+    return res.sendStatus(403);
+  }
+});
+
 
 router.post('/webhook/instagram', async (req, res) => {
   const body = req.body;
