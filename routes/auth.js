@@ -346,7 +346,7 @@ router.post('/webhook/instagram', async (req, res) => {
 
       if (messagingEvent.message && !messagingEvent.message.is_echo) {
         // 1. FIND THE USER IN YOUR DATABASE
-        const userConfig = await UserSettings.findOne({ instaId: pageId });
+        const userConfig = await User.findOne({ instaId: pageId });
 
         if (userConfig) {
           const incomingText = messagingEvent.message.text;
