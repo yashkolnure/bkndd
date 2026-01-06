@@ -335,31 +335,53 @@ router.get('/webhook/instagram', (req, res) => {
 });
 
 
-router.post('/webhook/instagram', async (req, res) => {
+router.post("/webhook/instagram", async (req, res) => {
   const body = req.body;
 
-  if (body.object === 'instagram') {
-    for (const entry of body.entry) {
-      const pageId = entry.id; // This is the ID of the user's Instagram account
-      const messagingEvent = entry.messaging[0];
-      console.log("Instagram Messaging Event:", messagingEvent);
-
-      if (messagingEvent.message && !messagingEvent.message.is_echo) {
-        // 1. FIND THE USER IN YOUR DATABASE
-        const userConfig = await User.findOne({ instagramBusinessId: pageId });
-
-        if (userConfig) {
-          const incomingText = messagingEvent.message.text;
-          const senderId = messagingEvent.sender.id;
-
-          // 2. RUN YOUR LLM LOGIC FOR THIS SPECIFIC USER
-          // Use userConfig.accessToken to send the reply back
-          await processAiReply(incomingText, senderId, userConfig.accessToken);
-        }
-      }
-      
-    }
-    res.status(200).send('EVENT_RECEIVED');
+  if (body.object !== "instagram") {
+    return res.sendStatus(200);
   }
+
+  for (const entry of body.entry || []) {
+    // ✅ Instagram may send messaging OR changes
+    const events = entry.messaging || [];
+
+    for (const event of events) {
+      console.log("Instagram Messaging Event:", event);
+
+      // 1️⃣ Ignore echoes (your own replies)
+      if (event.message?.is_echo) continue;
+
+      // 2️⃣ Only handle text messages
+      if (!event.message?.text) continue;
+
+      const senderId = event.sender.id;
+      const igBusinessId = event.recipient.id;
+      const text = event.message.text;
+
+      // 3️⃣ Find user safely
+      const user = await User.findOne({
+        instagramBusinessId: igBusinessId,
+        instagramEnabled: true
+      });
+
+      if (!user) {
+        console.log("⚠️ No user found for IG:", igBusinessId);
+        continue;
+      }
+
+      // 4️⃣ Send auto reply
+      await sendReply({
+        igBusinessId: user.instagramBusinessId,
+        pageToken: user.instagramToken,
+        recipientId: senderId,
+        text: "👋 Hi! Thanks for messaging us."
+      });
+    }
+  }
+
+  return res.sendStatus(200);
 });
+
+
 module.exports = router;
