@@ -28,7 +28,7 @@ router.post("/meta-connect", async (req, res) => {
     );
     console.log(
   "RAW /me/accounts RESPONSE:",
-  JSON.stringify(accountsRes.data.data, null, 2)
+  JSON.stringify(accountsRes.data, null, 2)
 );
 
     let instagramBusinessId = null;
