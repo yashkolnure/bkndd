@@ -13,14 +13,25 @@ const sendReply = require("../utils/sendReply");
 const express = require("express");
 const router = express.Router();
 router.post("/meta-connect", async (req, res) => {
+  console.log("META CONNECT BODY >>>", req.body);
+
   const { userId, userAccessToken } = req.body;
 
-  if (!userId || !userAccessToken) {
-    return res.status(400).json({ message: "Missing params" });
+  /* ---------- 1. VALIDATION ---------- */
+  if (!userId) {
+    return res.status(400).json({
+      message: "Missing userId (login session invalid)"
+    });
+  }
+
+  if (!userAccessToken) {
+    return res.status(400).json({
+      message: "Missing Facebook user access token"
+    });
   }
 
   try {
-    // 1️⃣ Get pages user manages
+    /* ---------- 2. GET USER PAGES ---------- */
     const pagesRes = await axios.get(
       "https://graph.facebook.com/v19.0/me/accounts",
       {
@@ -30,61 +41,94 @@ router.post("/meta-connect", async (req, res) => {
       }
     );
 
-    const pages = pagesRes.data.data || [];
+    const pages = pagesRes.data?.data || [];
 
     if (!pages.length) {
       return res.status(400).json({
-        message: "No Facebook Pages found. Please connect a Page first."
+        message:
+          "No Facebook Pages found. Make sure you are Admin of a Page and Instagram is connected."
       });
     }
-console.log("META CONNECT BODY:", req.body);
-    // 2️⃣ Find page linked to Instagram Business Account
-    let selectedPage = null;
+
+    console.log(
+      "PAGES FOUND:",
+      pages.map(p => ({
+        id: p.id,
+        name: p.name,
+        tokenPrefix: p.access_token?.slice(0, 6)
+      }))
+    );
+
+    /* ---------- 3. FIND PAGE WITH IG BUSINESS ---------- */
+    let finalPage = null;
 
     for (const page of pages) {
-      const igRes = await axios.get(
-        `https://graph.facebook.com/v19.0/${page.id}`,
-        {
-          params: {
-            fields: "instagram_business_account",
-            access_token: page.access_token
+      try {
+        const igRes = await axios.get(
+          `https://graph.facebook.com/v19.0/${page.id}`,
+          {
+            params: {
+              fields: "instagram_business_account",
+              access_token: page.access_token
+            }
           }
+        );
+
+        if (igRes.data.instagram_business_account) {
+          finalPage = {
+            pageId: page.id,
+            pageToken: page.access_token, // 🔥 EAAG TOKEN
+            instagramBusinessId:
+              igRes.data.instagram_business_account.id
+          };
+          break;
         }
-      );
-console.log("META CONNECT BODY:", req.body);
-      if (igRes.data.instagram_business_account) {
-        selectedPage = {
-          pageId: page.id,
-          pageToken: page.access_token, // 🔥 EAAG
-          instagramBusinessId: igRes.data.instagram_business_account.id
-        };
-        break;
+      } catch (err) {
+        console.warn(
+          "IG CHECK FAILED FOR PAGE:",
+          page.id,
+          err.response?.data || err.message
+        );
       }
     }
-console.log("META CONNECT BODY:", req.body);
-    if (!selectedPage) {
+
+    if (!finalPage) {
       return res.status(400).json({
-        message: "No Instagram Business Account connected to your Pages."
+        message:
+          "No Instagram Business Account connected to your Facebook Pages."
       });
     }
-    console.log("META CONNECT BODY:", req.body);
 
-
-    // 3️⃣ SAVE ONLY CORRECT VALUES
+    /* ---------- 4. SAVE TO USER ---------- */
     await User.findByIdAndUpdate(userId, {
       instagramEnabled: true,
-      instagramBusinessId: selectedPage.instagramBusinessId,
-      instagramToken: selectedPage.pageToken // 🔥 EAAG TOKEN
+      instagramBusinessId: finalPage.instagramBusinessId,
+      instagramToken: finalPage.pageToken // 🔑 EAAG ONLY
     });
-console.log("META CONNECT BODY:", req.body);
+
+    console.log(
+      "✅ INSTAGRAM CONNECTED",
+      "\nIG ID:",
+      finalPage.instagramBusinessId,
+      "\nTOKEN PREFIX:",
+      finalPage.pageToken.slice(0, 6)
+    );
+
+    /* ---------- 5. RESPONSE ---------- */
     return res.json({
       success: true,
-      instagramBusinessId: selectedPage.instagramBusinessId
+      instagramBusinessId: finalPage.instagramBusinessId
     });
   } catch (err) {
-    console.error("Meta connect error:", err.response?.data || err.message);
-    return res.status(500).json({ message: "Meta connect failed" });
-    console.log("META CONNECT BODY:", req.body);
+    console.error(
+      "META CONNECT FATAL ERROR:",
+      err.response?.data || err.message
+    );
+
+    return res.status(500).json({
+      message: "Meta connect failed",
+      error: err.response?.data || err.message
+    });
   }
 });
 
