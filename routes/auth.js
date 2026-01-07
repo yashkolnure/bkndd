@@ -37,7 +37,7 @@ router.post("/meta-connect", async (req, res) => {
         message: "No Facebook Pages found. Please connect a Page first."
       });
     }
-
+console.log("META CONNECT BODY:", req.body);
     // 2️⃣ Find page linked to Instagram Business Account
     let selectedPage = null;
 
@@ -51,7 +51,7 @@ router.post("/meta-connect", async (req, res) => {
           }
         }
       );
-
+console.log("META CONNECT BODY:", req.body);
       if (igRes.data.instagram_business_account) {
         selectedPage = {
           pageId: page.id,
@@ -61,7 +61,7 @@ router.post("/meta-connect", async (req, res) => {
         break;
       }
     }
-
+console.log("META CONNECT BODY:", req.body);
     if (!selectedPage) {
       return res.status(400).json({
         message: "No Instagram Business Account connected to your Pages."
@@ -76,7 +76,7 @@ router.post("/meta-connect", async (req, res) => {
       instagramBusinessId: selectedPage.instagramBusinessId,
       instagramToken: selectedPage.pageToken // 🔥 EAAG TOKEN
     });
-
+console.log("META CONNECT BODY:", req.body);
     return res.json({
       success: true,
       instagramBusinessId: selectedPage.instagramBusinessId
@@ -84,6 +84,7 @@ router.post("/meta-connect", async (req, res) => {
   } catch (err) {
     console.error("Meta connect error:", err.response?.data || err.message);
     return res.status(500).json({ message: "Meta connect failed" });
+    console.log("META CONNECT BODY:", req.body);
   }
 });
 
