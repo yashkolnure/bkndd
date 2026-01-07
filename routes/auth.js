@@ -403,67 +403,48 @@ router.get('/webhook/instagram', (req, res) => {
 router.post("/webhook/instagram", async (req, res) => {
   try {
     const body = req.body;
-    const CHAT_COST = 5; // Cost per AI interaction
-
     if (body.object !== "instagram") return res.sendStatus(200);
 
     for (const entry of body.entry || []) {
       const events = entry.messaging || [];
 
       for (const event of events) {
-        // Filter out echoes and non-text messages
+        // 1. Basic Filters
         if (event.message?.is_echo || !event.message?.text) continue;
 
         const senderId = event.sender?.id;
         const recipientId = event.recipient?.id; // Your IG Business ID
         const userMessage = event.message.text;
 
-        /* 1. ATOMIC USER LOOKUP & TOKEN DEDUCTION */
-        const user = await User.findOneAndUpdate(
-          { 
-            instagramBusinessId: recipientId, 
-            "botConfig.status": "active", 
-            tokens: { $gte: CHAT_COST } 
-          },
-          { $inc: { tokens: -CHAT_COST } },
-          { new: true }
-        ).lean();
-
-        if (!user) {
-          console.log(`❌ IG BLOCK: Business ${recipientId} inactive or low tokens.`);
-          continue; 
+        /* ==========================================================
+           2. CALL YOUR LOCAL CHAT API
+           Assuming your backend runs on port 5000.
+           We map the Instagram Business ID to your User ID.
+           ========================================================== */
+        
+        // Find the owner in your DB to get their MongoDB _id
+        const userDoc = await User.findOne({ instagramBusinessId: recipientId }).lean();
+        
+        if (!userDoc) {
+          console.log("❌ IG Webhook: No user found for this Business ID.");
+          continue;
         }
 
-        /* 2. RETRIEVE CONVERSATION MEMORY */
-        // This requires the 'Conversation' model to be imported at the top of the file
-        const historyDoc = await Conversation.findOne({ 
-          user: user._id, 
-          customerIdentifier: senderId 
-        }).lean();
+        const userId = userDoc._id.toString();
+        const localApiUrl = `http://localhost:5000/api/chat/public-message/${userId}`;
 
-        const pastMessages = historyDoc ? historyDoc.messages.slice(-6).map(m => ({
-          role: m.role === 'user' ? 'user' : 'assistant',
-          content: m.text
-        })) : [];
+        // Calling your public message API
+        const chatResponse = await axios.post(localApiUrl, {
+          message: userMessage,
+          customerData: { name: senderId } // Passing IG sender ID as customer name
+        });
 
-        /* 3. CALL VPS AI FOR DYNAMIC RESPONSE */
-        const systemContent = `${user.botConfig.systemPrompt}\n\n[KNOWLEDGE_BASE]\n${user.botConfig.ragFile}`.trim();
+        const botReply = chatResponse.data?.response || "I'm sorry, I couldn't process that.";
 
-        const vpsPayload = {
-          model: user.botConfig.model?.primary || "llama3",
-          messages: [
-            { role: "system", content: systemContent },
-            ...pastMessages,
-            { role: "user", content: userMessage }
-          ],
-          options: { temperature: 0.2 }
-        };
-
-        const aiResponse = await axios.post(`${process.env.VPS_AI_URL}/api/chat`, vpsPayload);
-        const botReply = aiResponse.data?.message?.content || "I'm sorry, I couldn't process that.";
-
-        /* 4. SEND REPLY (Using your HARDCODED TOKEN) */
-        // Replace this string with a NEW token if you still get OAuth errors
+        /* ==========================================================
+           3. SEND THE AI REPLY TO INSTAGRAM
+           (Keeping your hardcoded token as requested)
+           ========================================================== */
         const INSTAGRAM_TEST_TOKEN = "IGAAMsCB9K6OFBZAGFHZAFhobFozOWNzYkVQUmVraW5lRjZArVlg5VEJwcUlzVnFoTHYycThLQnNYbHFnRnNsWEFCMEFCVXpjRFRkRDdFTXJSUUgyWEZArd3liWlVWZAkxQdjVXSVZAKOFhibmgzd1lLX3Vtc2NJNWdlMG1yMzdmNHotbwZDZD";
 
         await axios.post(
@@ -480,28 +461,17 @@ router.post("/webhook/instagram", async (req, res) => {
           }
         );
 
-        /* 5. UPDATE CONVERSATION LOGS */
-        await Conversation.findOneAndUpdate(
-          { user: user._id, customerIdentifier: senderId },
-          {
-            $push: {
-              messages: [
-                { role: 'user', text: userMessage, timestamp: new Date() },
-                { role: 'bot', text: botReply, timestamp: new Date() }
-              ]
-            },
-            $set: { lastInteraction: new Date() }
-          },
-          { upsert: true }
-        );
-
-        console.log(`✅ AI Response sent to IG: ${senderId} | Bal: ${user.tokens}`);
+        console.log(`✅ Success: AI response from local API sent to IG User ${senderId}`);
       }
     }
+
     return res.sendStatus(200);
   } catch (err) {
-    // Detailed error logging to help you catch token expiration
-    console.error("🔥 Instagram webhook error:", err.response?.data || err.message);
+    // Detailed error logging for your PM2 logs
+    console.error("🔥 Instagram Webhook Error:", {
+        msg: err.message,
+        vpsError: err.response?.data
+    });
     return res.sendStatus(200);
   }
 });
