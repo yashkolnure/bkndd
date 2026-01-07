@@ -77,7 +77,6 @@ router.get('/webhook/meta', async (req, res) => {
     res.sendStatus(403);
 });
 
-router.get('/config', auth, socialCtrl.getSettings);
 router.post('/settings/update', auth, socialCtrl.updateSettings);
 
 // --- PUBLIC: Meta Webhook Verification (GET) ---
@@ -145,52 +144,64 @@ router.post('/chat/debug', auth, deductTokens, async (req, res) => {
 /* --- 1. GET BOT CONFIGURATION --- */
 // --- 1. THE MIDDLEWARE (Defined directly here to fix the error) ---
 const protect = async (req, res, next) => {
-  const authHeader = req.header("Authorization");
-  const token = authHeader && authHeader.split(" ")[1];
-
-  if (!token) return res.status(401).json({ message: "No token, authorization denied" });
-
   try {
+    const authHeader = req.header("Authorization");
+    const token = authHeader && authHeader.split(" ")[1];
+
+    if (!token) return res.status(401).json({ message: "No token, authorization denied" });
+
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded; // This contains the user ID
+    req.user = decoded; 
     next();
   } catch (err) {
-    res.status(401).json({ message: "Token is not valid" });
+    res.status(401).json({ message: "Invalid token" });
   }
 };
 
-// --- 2. THE GET ROUTE (Fetches data from your User table) ---
+/* --- 1. GET: FETCH SAVED DATA --- */
 router.get("/config", protect, async (req, res) => {
   try {
-    // We use req.user.id which was set in the protect function above
-    const user = await User.findById(req.user.id);
+    const user = await User.findById(req.user.id).lean();
 
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    // This sends the saved DB data back to your frontend
+    // This structure matches your React: if (response.ok && res.botConfig)
     res.json({
-      botConfig: user.botConfig || {}, 
-      userTokens: user.tokens || 0
+      botConfig: user.botConfig || {
+        // Fallback: If botConfig is missing in DB, map flat fields into it
+        rawData: {
+          whatsappEnabled: user.whatsappEnabled,
+          instagramEnabled: user.instagramEnabled,
+          businessName: user.businessName || "" 
+        }
+      },
+      userTokens: user.tokens || 100
     });
   } catch (err) {
-    console.error(err);
-    res.status(500).send("Server Error");
+    res.status(500).json({ message: "Server Error" });
+  }
+});
+router.post("/save", protect, async (req, res) => {
+  try {
+    // req.body here is the full 'payload' from your handlePublish function
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user.id,
+      { $set: { botConfig: req.body } }, 
+      { new: true, runValidators: true }
+    );
+
+    res.json({
+      success: true,
+      botConfig: updatedUser.botConfig,
+      userTokens: updatedUser.tokens
+    });
+  } catch (err) {
+    console.error("Save Error:", err);
+    res.status(500).json({ message: "Failed to save configuration" });
   }
 });
 
-// --- 3. THE SAVE ROUTE ---
-router.post("/save", protect, async (req, res) => {
-  try {
-    const user = await User.findByIdAndUpdate(
-      req.user.id,
-      { $set: { botConfig: req.body } },
-      { new: true }
-    );
-    res.json({ botConfig: user.botConfig, userTokens: user.tokens });
-  } catch (err) {
-    res.status(500).send("Save Error");
-  }
-});
+
 // --- 6. INTEGRATION VERIFY & UPDATE ---
 router.post('/settings/verify', auth, async (req, res) => {
   const { platform, id, token: bodyToken } = req.body; 

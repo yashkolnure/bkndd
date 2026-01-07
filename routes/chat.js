@@ -1,3 +1,5 @@
+
+const mongoose = require('mongoose');
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
@@ -6,7 +8,6 @@ const jwt = require('jsonwebtoken');
 // Models
 const BotConfig = require('../models/BotConfig');
 const Conversation = require('../models/Conversation');
-const Lead = require('../models/Lead');
 const User = require('../models/User');
 
 const captureLead = require('../helpers/leadEngine');
@@ -59,189 +60,232 @@ router.post('/message', auth, async (req, res) => {
 /**
  * --- 4. PUBLIC: FETCH BOT INFO ---
  */
-
-router.get('/public-info/:botId', async (req, res) => {
+router.get('/public-info/:userId', async (req, res) => {
     try {
-        const { botId } = req.params;
+        const { userId } = req.params;
 
-        // 1. Resolve BotConfig (by botId or userId)
-        let botConfig = await BotConfig.findById(botId).catch(() => null);
-
-        if (!botConfig) {
-            botConfig = await BotConfig.findOne({ user: botId });
+        // 1. Validate ID format to prevent database errors
+        if (!mongoose.Types.ObjectId.isValid(userId)) {
+            return res.status(400).json({ success: false, message: "Invalid ID format" });
         }
 
-        if (!botConfig) {
-            return res.status(404).json({ message: "Bot not found" });
+        // 2. Fetch User and project botConfig including ragFile and systemPrompt
+        // Adding 'botConfig' to the projection pulls all nested fields
+        const user = await User.findById(userId, 'botConfig').lean();
+
+        if (!user || !user.botConfig) {
+            return res.status(404).json({ success: false, message: "Bot configuration not found" });
         }
 
-        // 2. Return ONLY public-safe data
+        // 3. Return data including the compiled RAG and System Prompt
         return res.json({
-            businessName: botConfig.rawData.businessName,
-            businessDescription: botConfig.rawData.businessDescription,
-            language: botConfig.rawData.language,
-            status: botConfig.status,
-            model: botConfig.model.primary
+            success: true,
+            status: user.botConfig.status,
+            // Core Identity
+            businessName: user.botConfig.rawData.businessName,
+            businessDescription: user.botConfig.rawData.businessDescription,
+            language: user.botConfig.rawData.language,
+            
+            // Intelligence Config
+            model: user.botConfig.model.primary,
+            agentType: user.botConfig.rawData.agentType,
+            
+            // Passing the compiled prompts
+            systemPrompt: user.botConfig.systemPrompt || "", 
+            ragFile: user.botConfig.ragFile || ""
         });
 
     } catch (err) {
         console.error("Public Bot Info Error:", err);
-        return res.status(400).json({ message: "Invalid bot ID" });
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
     }
 });
-
 /**
  * --- 5. PUBLIC: CHAT INTERFACE (Lead Scanning + Tokens) ---
  */
-router.post('/public-message/:botId', async (req, res) => {
+router.post('/public-message/:userId', async (req, res) => {
     const { message, customerData } = req.body;
-    const { botId } = req.params;
+    const { userId } = req.params;
     const CHAT_COST = 5;
 
-    // --- LOG 1: Incoming Traffic ---
-    console.log("\n--- 📥 NEW INCOMING MESSAGE ---");
-    console.log(`Bot ID: ${botId}`);
-    console.log(`Message: "${message}"`);
-    console.log(`Customer Data:`, customerData);
-
-    if (!message) {
+    // 1. Validation & ID Format Check
+    if (!message || message.trim().length === 0) {
         return res.status(400).json({ success: false, message: "Transmission empty." });
     }
 
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+        return res.status(400).json({ success: false, message: "Invalid Neural Node ID format." });
+    }
+
     try {
-        /* ---------------- 1. RESOLVE NEURAL NODE ---------------- */
-        let botConfig = await BotConfig.findById(botId).catch(() => null);
-        if (!botConfig) {
-            botConfig = await BotConfig.findOne({ user: botId });
-        }
-
-        if (!botConfig) {
-            console.log("❌ ERROR: Bot configuration not found in database.");
-            return res.status(404).json({ success: false, message: "Neural Node not found." });
-        }
-
-        if (botConfig.status !== 'active') {
-            console.log("⚠️ WARNING: Bot found but status is:", botConfig.status);
-            return res.status(404).json({ success: false, message: "Neural Node is inactive." });
-        }
-
-        /* ---------------- 2. TOKEN DEDUCTION ---------------- */
-        const owner = await User.findOneAndUpdate(
-            { _id: botConfig.user, tokens: { $gte: CHAT_COST } },
+        /* 2. ATOMIC FETCH & DEDUCTION
+           Retrieves user config and deducts 5 tokens in one step.
+        */
+        const user = await User.findOneAndUpdate(
+            { 
+                _id: new mongoose.Types.ObjectId(userId), 
+                "botConfig.status": "active", 
+                tokens: { $gte: CHAT_COST } 
+            },
             { $inc: { tokens: -CHAT_COST } },
             { new: true }
-        );
+        ).lean();
 
-        if (!owner) {
-            console.log("❌ ERROR: Insufficient tokens for user ID:", botConfig.user);
-            return res.status(403).json({
-                success: false,
-                message: "Neural Engine offline. Please contact the business owner for credits."
+        if (!user) {
+            return res.status(403).json({ 
+                success: false, 
+                message: "Neural Node is offline. Inactive or Insufficient Credits." 
             });
         }
-        console.log(`✅ TOKENS DEDUCTED. Remaining: ${owner.tokens}`);
 
+        /* 3. RETRIEVE CONVERSATION MEMORY
+           Fetch the last few interactions to provide context to the AI.
+        */
         const displayName = customerData?.name || "Guest";
+        const conversationHistory = await Conversation.findOne({ 
+            user: user._id, 
+            customerIdentifier: displayName 
+        }).lean();
 
-        /* ---------------- 3. LEAD CAPTURE (ASYNC) ---------------- */
-        const processLeads = async () => {
-            try {
-                const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-                const phoneRegex = /(\+?\d{1,4}[\s-]?)?[\d\s-]{7,15}/g;
+        // Limit memory to the last 6 messages (3 exchanges) to keep the prompt efficient
+        const memoryLimit = 6;
+        const pastMessages = conversationHistory 
+            ? conversationHistory.messages.slice(-memoryLimit).map(m => ({
+                role: m.role === 'user' ? 'user' : 'assistant',
+                content: m.text
+            })) 
+            : [];
 
-                const foundEmails = message.match(emailRegex) || [];
-                const foundPhones = message.match(phoneRegex) || [];
+        /* 4. PASS-THRU COMPILATION
+           Prepares the System prompt with RAG knowledge.
+        */
+        const { systemPrompt, ragFile, model } = user.botConfig;
+        const systemContent = `
+${systemPrompt}
 
-                if (foundEmails.length > 0 || foundPhones.length > 0) {
-                    console.log(`🎯 LEAD DETECTED: Emails: ${foundEmails}, Phones: ${foundPhones}`);
-                }
-            } catch (e) {
-                console.error("Lead Capture Error:", e);
-            }
-        };
-        processLeads(); 
-
-        /* ---------------- 4. BUILD DYNAMIC PROMPT ---------------- */
-        // This is where we verify if Manual or Auto settings are working
-        const systemMessage = `
-${botConfig.systemPrompt}
-
-### BUSINESS CONTEXT (KNOWLEDGE BASE)
-${botConfig.ragFile}
-
-### SESSION METADATA
-- Customer Name: ${displayName}
-- Language: ${botConfig.rawData?.language || 'English'}
-- Timestamp: ${new Date().toISOString()}
+[KNOWLEDGE_BASE]
+${ragFile}
 `.trim();
 
-        // --- LOG 2: Compiled AI Brain ---
-        console.log("--- 🧠 COMPILED SYSTEM MESSAGE ---");
-        console.log(systemMessage);
-        console.log("----------------------------------");
-
-        /* ---------------- 5. VPS OLLAMA REQUEST ---------------- */
+        /* 5. VPS AI REQUEST WITH MEMORY INJECTION
+           The 'messages' array now includes: System Prompt -> Memory -> New Message
+        */
         const vpsPayload = {
-            model: botConfig.model?.primary || "llama3.2",
+            model: model?.primary || "llama3",
             messages: [
-                { role: "system", content: systemMessage },
+                { role: "system", content: systemContent },
+                ...pastMessages, // Injected Memory
                 { role: "user", content: message }
             ],
             stream: false,
             options: {
                 num_thread: 8,
-                temperature: 0.3
+                temperature: 0.2
             }
         };
-
-        // --- LOG 3: Outgoing Payload ---
-        console.log("🚀 SENDING TO VPS...");
-        console.log(`URL: ${process.env.VPS_AI_URL}/api/chat`);
-        console.log(`Model Used: ${vpsPayload.model}`);
 
         const aiResponse = await axios.post(
             `${process.env.VPS_AI_URL}/api/chat`,
             vpsPayload,
-            { timeout: 60000 }
+            { timeout: 45000 }
         );
 
-        const botText = aiResponse.data?.message?.content || "Engine failed to generate response.";
+        const botReply = aiResponse.data?.message?.content || "Engine synthesis failed.";
 
-        // --- LOG 4: AI Reply ---
-        console.log("🤖 AI RESPONSE RECEIVED:");
-        console.log(botText);
-
-        /* ---------------- 6. LOG CONVERSATION ---------------- */
-        Conversation.findOneAndUpdate(
-            { user: botConfig.user, customerIdentifier: displayName },
+        /* 6. CONVERSATION LOGGING
+           Updates memory with the latest user message and AI response.
+        */
+        await Conversation.findOneAndUpdate(
+            { user: user._id, customerIdentifier: displayName },
             {
                 $push: {
                     messages: [
                         { role: 'user', text: message, timestamp: new Date() },
-                        { role: 'bot', text: botText, timestamp: new Date() }
+                        { role: 'bot', text: botReply, timestamp: new Date() }
                     ]
                 },
                 $set: { lastInteraction: new Date() }
             },
             { upsert: true }
-        ).catch(err => console.error("Conversation Log Error:", err));
+        );
 
-        /* ---------------- 7. RESPOND ---------------- */
-        console.log("✅ REQUEST COMPLETED SUCCESSFULLY\n");
-        return res.json({ success: true, response: botText });
+        /* 7. FINAL RESPONSE */
+        console.log(`✅ [MEMORY-ACTIVE] ${user.name} | Deducted 5 | Bal: ${user.tokens}`);
+        return res.json({ 
+            success: true, 
+            response: botReply,
+            remainingTokens: user.tokens 
+        });
 
     } catch (err) {
-        console.log("🔥 CRITICAL ENGINE ERROR LOGGED:");
-        if (err.response) {
-            console.error("VPS Response Error:", err.response.data);
-        } else {
-            console.error("Error Message:", err.message);
-        }
-
+        console.error("🔥 CRITICAL ENGINE ERROR:", err.message);
         return res.status(502).json({
             success: false,
-            message: "Neural Engine temporarily disconnected. Please try again."
+            message: "Neural Engine temporarily disconnected. Please try again later."
         });
+    }
+});
+/**
+ * NEURAL DIAGNOSTICS ROUTE
+ * Use this to verify why a User ID is being blocked.
+ * GET /api/chat/debug/:userId
+ */
+
+router.get('/debug/:userId', async (req, res) => {
+    const { userId } = req.params;
+
+    // Validate if the ID is a valid MongoDB format to avoid crashes
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+        return res.status(400).json({ 
+            success: false, 
+            diagnosis: "Invalid ID Format. The string must be a 24-character hex ID.",
+            providedId: userId 
+        });
+    }
+
+    try {
+        // Fetch raw document using .lean() to see exact BSON values
+        const user = await User.findById(userId).lean();
+
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                diagnosis: "User NOT FOUND in database. Ensure you are using the correct _id from the Users collection.",
+                providedId: userId
+            });
+        }
+
+        // Logic Check results
+        const checks = {
+            statusCheck: user.botConfig?.status === 'active' ? "✅ PASS" : "❌ FAIL (Must be 'active')",
+            tokenCheck: user.tokens >= 5 ? "✅ PASS" : "❌ FAIL (Need at least 5 tokens)",
+            systemPromptCheck: (user.botConfig?.systemPrompt?.length > 0) ? "✅ PASS" : "⚠️ WARNING (Empty Prompt)",
+            ragFileCheck: (user.botConfig?.ragFile?.length > 0) ? "✅ PASS" : "⚠️ WARNING (Empty RAG Content)"
+        };
+
+        // Final Verdict
+        const canRespond = user.botConfig?.status === 'active' && user.tokens >= 5;
+
+        return res.json({
+            success: true,
+            verdict: canRespond ? "READY_TO_CHAT" : "BLOCKED",
+            analysis: {
+                userName: user.name,
+                currentTokens: user.tokens,
+                botStatus: user.botConfig?.status,
+                primaryModel: user.botConfig?.model?.primary,
+                diagnostics: checks
+            },
+            // Metadata for developer review
+            dataPreview: {
+                systemPromptPreview: user.botConfig?.systemPrompt ? `${user.botConfig.systemPrompt.substring(0, 50)}...` : "EMPTY",
+                ragContentPreview: user.botConfig?.ragFile ? `${user.botConfig.ragFile.substring(0, 50)}...` : "EMPTY"
+            }
+        });
+
+    } catch (err) {
+        console.error("Debug Error:", err.message);
+        return res.status(500).json({ success: false, error: err.message });
     }
 });
 /**
