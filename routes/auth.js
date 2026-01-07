@@ -400,119 +400,64 @@ router.get('/webhook/instagram', (req, res) => {
 
 
 router.post("/webhook/instagram", async (req, res) => {
-  try {
-    const body = req.body;
-    const CHAT_COST = 5; //
+  const body = req.body;
 
-    if (body.object !== "instagram") return res.sendStatus(200);
-
-    for (const entry of body.entry || []) {
-      const events = entry.messaging || [];
-
-      for (const event of events) {
-        // 1. Basic Filters
-        if (event.message?.is_echo || !event.message?.text) continue;
-
-        const senderId = event.sender?.id;
-        const recipientId = event.recipient?.id; // This is your Instagram Business ID
-        const userMessage = event.message.text;
-
-        /* ==========================================================
-           2. RESOLVE USER & DEDUCT TOKENS
-           Find the owner by Instagram ID and ensure they are active.
-           ========================================================== */
-        const user = await User.findOneAndUpdate(
-          { 
-            instagramBusinessId: recipientId, 
-            "botConfig.status": "active", 
-            tokens: { $gte: CHAT_COST } 
-          },
-          { $inc: { tokens: -CHAT_COST } },
-          { new: true }
-        ).lean(); //
-
-        if (!user) {
-          console.log("❌ IG BLOCK: User not found, inactive, or out of tokens.");
-          continue;
-        }
-
-        /* ==========================================================
-           3. RETRIEVE MEMORY & COMPILE PROMPTS
-           ========================================================== */
-        const historyDoc = await Conversation.findOne({ 
-          user: user._id, 
-          customerIdentifier: senderId 
-        }).lean(); //
-
-        const pastMessages = historyDoc ? historyDoc.messages.slice(-6).map(m => ({
-          role: m.role === 'user' ? 'user' : 'assistant',
-          content: m.text
-        })) : []; //
-
-        const systemContent = `${user.botConfig.systemPrompt}\n\n[KNOWLEDGE_BASE]\n${user.botConfig.ragFile}`.trim(); //
-
-        /* ==========================================================
-           4. VPS AI CALL
-           ========================================================== */
-        const vpsPayload = {
-          model: user.botConfig.model?.primary || "llama3",
-          messages: [
-            { role: "system", content: systemContent },
-            ...pastMessages,
-            { role: "user", content: userMessage }
-          ],
-          options: { temperature: 0.2 }
-        }; //
-
-        const aiResponse = await axios.post(
-          `${process.env.VPS_AI_URL}/api/chat`, 
-          vpsPayload
-        );
-        const botReply = aiResponse.data?.message?.content || "I'm having trouble thinking right now.";
-
-        /* ==========================================================
-           5. SEND REPLY TO INSTAGRAM
-           ========================================================== */
-        await axios.post(
-          "https://graph.instagram.com/v21.0/me/messages",
-          {
-            message: JSON.stringify({ text: botReply }),
-            recipient: JSON.stringify({ id: senderId })
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${user.instagramToken}`, // Use user's specific token
-              "Content-Type": "application/json"
-            }
-          }
-        );
-
-        /* ==========================================================
-           6. LOG CONVERSATION
-           ========================================================== */
-        await Conversation.findOneAndUpdate(
-          { user: user._id, customerIdentifier: senderId },
-          {
-            $push: {
-              messages: [
-                { role: 'user', text: userMessage, timestamp: new Date() },
-                { role: 'bot', text: botReply, timestamp: new Date() }
-              ]
-            },
-            $set: { lastInteraction: new Date() }
-          },
-          { upsert: true }
-        ); //
-
-        console.log(`✅ AI Response sent to IG: ${senderId} | Tokens: ${user.tokens}`);
-      }
-    }
-
-    return res.sendStatus(200);
-  } catch (err) {
-    console.error("🔥 IG Webhook Error:", err.response?.data || err.message);
+  if (body.object !== "instagram") {
     return res.sendStatus(200);
   }
+
+  for (const entry of body.entry || []) {
+    const events = entry.messaging || [];
+
+    for (const event of events) {
+      console.log("📩 IG EVENT:", event);
+
+      // 1️⃣ Ignore echoes
+      if (event.message?.is_echo) {
+        console.log("↩️ Echo ignored");
+        continue;
+      }
+
+      // 2️⃣ Only text messages
+      if (!event.message?.text) {
+        console.log("⚠️ Non-text message ignored");
+        continue;
+      }
+
+      const senderId = event.sender.id;
+      const igBusinessId = event.recipient.id;
+
+      console.log("🆔 IDs:", { senderId, igBusinessId });
+
+      // 3️⃣ Find user
+      const user = await User.findOne({
+        instagramBusinessId: igBusinessId,
+        instagramEnabled: true
+      });
+
+      if (!user) {
+        console.log("❌ No user found for IG:", igBusinessId);
+        continue;
+      }
+
+      console.log("✅ User found:", user._id);
+      console.log("🔑 Token starts with:", user.instagramToken?.slice(0, 10));
+
+      // 4️⃣ STATIC AUTO REPLY
+      await sendReply({
+        igBusinessId,
+        pageToken: user.instagramToken,
+        recipientId: senderId,
+        text: "👋 Hi! This is a static auto-reply test from MyAutoBot."
+      });
+
+      console.log("✅ Auto-reply attempted");
+    }
+  }
+
+  return res.sendStatus(200);
 });
+
+
 
 module.exports = router;
