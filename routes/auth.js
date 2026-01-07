@@ -6,6 +6,7 @@ const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const sendEmail = require("../utils/sendEmail");
 const sendReply = require("../utils/sendReply");
+const Conversation = require('../models/Conversation');
 
 /* =========================================================
    META OAUTH CALLBACK (JS SDK SAFE, PRODUCTION READY)
