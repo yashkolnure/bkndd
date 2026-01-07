@@ -67,6 +67,8 @@ router.post("/meta-connect", async (req, res) => {
         message: "No Instagram Business Account connected to your Pages."
       });
     }
+    console.log("META CONNECT BODY:", req.body);
+
 
     // 3️⃣ SAVE ONLY CORRECT VALUES
     await User.findByIdAndUpdate(userId, {
