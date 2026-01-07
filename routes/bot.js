@@ -142,57 +142,53 @@ router.post('/chat/debug', auth, deductTokens, async (req, res) => {
     res.status(500).json({ success: false, message: "AI Handshake Error" });
   }
 });
-// --- GET CONFIG: Hydrate Frontend ---
-router.get('/config', auth, async (req, res) => {
+/* --- 1. GET BOT CONFIGURATION --- */
+// --- 1. THE MIDDLEWARE (Defined directly here to fix the error) ---
+const protect = async (req, res, next) => {
+  const authHeader = req.header("Authorization");
+  const token = authHeader && authHeader.split(" ")[1];
+
+  if (!token) return res.status(401).json({ message: "No token, authorization denied" });
+
   try {
-    const config = await BotConfig.findOne({ user: req.user.id });
-    
-    // Return the config + user's current token balance
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded; // This contains the user ID
+    next();
+  } catch (err) {
+    res.status(401).json({ message: "Token is not valid" });
+  }
+};
+
+// --- 2. THE GET ROUTE (Fetches data from your User table) ---
+router.get("/config", protect, async (req, res) => {
+  try {
+    // We use req.user.id which was set in the protect function above
+    const user = await User.findById(req.user.id);
+
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    // This sends the saved DB data back to your frontend
     res.json({
-      success: true,
-      botConfig: config || null,
-      userTokens: req.user.tokens // Assuming 'tokens' is on your User model
+      botConfig: user.botConfig || {}, 
+      userTokens: user.tokens || 0
     });
   } catch (err) {
-    res.status(500).json({ success: false, message: "VPS Uplink Error" });
+    console.error(err);
+    res.status(500).send("Server Error");
   }
 });
 
-// --- POST SAVE: Synchronize Engine ---
-router.post("/save", auth, async (req, res) => {
+// --- 3. THE SAVE ROUTE ---
+router.post("/save", protect, async (req, res) => {
   try {
-    const { 
-      status, model, systemPrompt, customSystemPrompt, 
-      isManualPromptEnabled, ragFile, isCustomRagEnabled, rawData 
-    } = req.body;
-
-    // Validation: Engine requires a name to initialize
-    if (!rawData?.businessName?.trim()) {
-      return res.status(400).json({ success: false, message: "Business Name is required." });
-    }
-
-    const botConfig = await BotConfig.findOneAndUpdate(
-      { user: req.user.id },
-      {
-        $set: {
-          status: status || 'draft',
-          model,
-          systemPrompt,
-          customSystemPrompt,
-          isManualPromptEnabled,
-          ragFile,
-          isCustomRagEnabled,
-          rawData,
-          lastUpdated: Date.now()
-        }
-      },
-      { upsert: true, new: true, runValidators: true }
+    const user = await User.findByIdAndUpdate(
+      req.user.id,
+      { $set: { botConfig: req.body } },
+      { new: true }
     );
-
-    res.json({ success: true, botConfig });
+    res.json({ botConfig: user.botConfig, userTokens: user.tokens });
   } catch (err) {
-    console.error("SAVE ERROR:", err);
-    res.status(500).json({ success: false, message: "Database Write Failed" });
+    res.status(500).send("Save Error");
   }
 });
 // --- 6. INTEGRATION VERIFY & UPDATE ---
