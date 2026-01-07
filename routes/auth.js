@@ -398,8 +398,6 @@ router.get('/webhook/instagram', (req, res) => {
     return res.sendStatus(403);
   }
 });
-
-
 router.post("/webhook/instagram", async (req, res) => {
   try {
     const body = req.body;
@@ -413,40 +411,38 @@ router.post("/webhook/instagram", async (req, res) => {
         if (event.message?.is_echo || !event.message?.text) continue;
 
         const senderId = event.sender?.id;
-        const recipientId = event.recipient?.id; // Your IG Business ID
+        const recipientId = event.recipient?.id; 
         const userMessage = event.message.text;
 
         /* ==========================================================
-           2. CALL YOUR LOCAL CHAT API
-           Assuming your backend runs on port 5000.
-           We map the Instagram Business ID to your User ID.
+           2. RESOLVE USER FROM DATABASE
+           Pulls the full user document to get the ID and Access Token.
            ========================================================== */
-        
-        // Find the owner in your DB to get their MongoDB _id
         const userDoc = await User.findOne({ instagramBusinessId: recipientId }).lean();
         
-        if (!userDoc) {
-          console.log("❌ IG Webhook: No user found for this Business ID.");
+        if (!userDoc || !userDoc.instagramToken) {
+          console.log(`❌ IG Webhook: No user or token found for Business ID: ${recipientId}`);
           continue;
         }
 
         const userId = userDoc._id.toString();
+        const activeToken = userDoc.instagramToken; // Pulling token from DB
         const localApiUrl = `http://localhost:5000/api/chat/public-message/${userId}`;
 
-        // Calling your public message API
+        /* ==========================================================
+           3. CALL LOCAL CHAT API
+           Handles token deduction (5 tokens) and AI logic.
+           ========================================================== */
         const chatResponse = await axios.post(localApiUrl, {
           message: userMessage,
-          customerData: { name: senderId } // Passing IG sender ID as customer name
+          customerData: { name: senderId }
         });
 
         const botReply = chatResponse.data?.response || "I'm sorry, I couldn't process that.";
 
         /* ==========================================================
-           3. SEND THE AI REPLY TO INSTAGRAM
-           (Keeping your hardcoded token as requested)
+           4. SEND THE AI REPLY TO INSTAGRAM (Dynamic Token)
            ========================================================== */
-        const INSTAGRAM_TEST_TOKEN = "IGAAMsCB9K6OFBZAGFHZAFhobFozOWNzYkVQUmVraW5lRjZArVlg5VEJwcUlzVnFoTHYycThLQnNYbHFnRnNsWEFCMEFCVXpjRFRkRDdFTXJSUUgyWEZArd3liWlVWZAkxQdjVXSVZAKOFhibmgzd1lLX3Vtc2NJNWdlMG1yMzdmNHotbwZDZD";
-
         await axios.post(
           "https://graph.instagram.com/v21.0/me/messages",
           {
@@ -455,19 +451,18 @@ router.post("/webhook/instagram", async (req, res) => {
           },
           {
             headers: {
-              Authorization: `Bearer ${INSTAGRAM_TEST_TOKEN}`,
+              Authorization: `Bearer ${activeToken}`, // Use token from User table
               "Content-Type": "application/json"
             }
           }
         );
 
-        console.log(`✅ Success: AI response from local API sent to IG User ${senderId}`);
+        console.log(`✅ Success: AI reply sent via DB token for User ${userDoc.name}`);
       }
     }
 
     return res.sendStatus(200);
   } catch (err) {
-    // Detailed error logging for your PM2 logs
     console.error("🔥 Instagram Webhook Error:", {
         msg: err.message,
         vpsError: err.response?.data
@@ -475,6 +470,5 @@ router.post("/webhook/instagram", async (req, res) => {
     return res.sendStatus(200);
   }
 });
-
 
 module.exports = router;
