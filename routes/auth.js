@@ -400,64 +400,77 @@ router.get('/webhook/instagram', (req, res) => {
 
 
 router.post("/webhook/instagram", async (req, res) => {
-  const body = req.body;
+  try {
+    const body = req.body;
 
-  if (body.object !== "instagram") {
+    // Only handle Instagram events
+    if (body.object !== "instagram") {
+      return res.sendStatus(200);
+    }
+
+    for (const entry of body.entry || []) {
+      const events = entry.messaging || [];
+
+      for (const event of events) {
+        console.log("📩 IG EVENT:", event);
+
+        // Ignore echoes / self messages
+        if (event.message?.is_echo || event.message?.is_self) {
+          console.log("↩️ Echo ignored");
+          continue;
+        }
+
+        // Only text messages
+        if (!event.message || !event.message.text) {
+          console.log("⚠️ Non-text message ignored");
+          continue;
+        }
+
+        const senderId = event.sender?.id;
+        if (!senderId) {
+          console.log("❌ Missing senderId");
+          continue;
+        }
+
+        /* ===============================
+           🔥 HARDCODED TEST TOKEN
+           =============================== */
+        const INSTAGRAM_TEST_TOKEN =
+          "IGAAMsCB9K6OFBZAGFHZAFhobFozOWNzYkVQUmVraW5lRjZArVlg5VEJwcUlzVnFoTHYycThLQnNYbHFnRnNsWEFCMEFCVXpjRFRkRDdFTXJSUUgyWEZArd3liWlVWZAkxQdjVXSVZAKOFhibmgzd1lLX3Vtc2NJNWdlMG1yMzdmNHotbwZDZD";
+
+        // Send reply EXACTLY like your curl
+        await axios.post(
+          "https://graph.instagram.com/v21.0/me/messages",
+          {
+            message: JSON.stringify({
+              text: "👋 Hi! This is a HARD-CODED test reply from MyAutoBot."
+            }),
+            recipient: JSON.stringify({
+              id: senderId
+            })
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${INSTAGRAM_TEST_TOKEN}`,
+              "Content-Type": "application/json"
+            }
+          }
+        );
+
+        console.log("✅ Static auto-reply sent (HARDCODED TOKEN)");
+      }
+    }
+
+    return res.sendStatus(200);
+  } catch (err) {
+    console.error(
+      "🔥 Instagram webhook error:",
+      err.response?.data || err.message
+    );
+
+    // Meta requires 200 even on failure
     return res.sendStatus(200);
   }
-
-  for (const entry of body.entry || []) {
-    const events = entry.messaging || [];
-
-    for (const event of events) {
-      console.log("📩 IG EVENT:", event);
-
-      // 1️⃣ Ignore echoes
-      if (event.message?.is_echo) {
-        console.log("↩️ Echo ignored");
-        continue;
-      }
-
-      // 2️⃣ Only text messages
-      if (!event.message?.text) {
-        console.log("⚠️ Non-text message ignored");
-        continue;
-      }
-
-      const senderId = event.sender.id;
-      const igBusinessId = event.recipient.id;
-
-      console.log("🆔 IDs:", { senderId, igBusinessId });
-
-      // 3️⃣ Find user
-      const user = await User.findOne({
-        instagramBusinessId: igBusinessId,
-        instagramEnabled: true
-      });
-
-      if (!user) {
-        console.log("❌ No user found for IG:", igBusinessId);
-        continue;
-      }
-
-      console.log("✅ User found:", user._id);
-      console.log("🔑 Token starts with:", user.instagramToken?.slice(0, 10));
-
-      // 4️⃣ STATIC AUTO REPLY
-      await sendReply({
-        igBusinessId,
-        pageToken: user.instagramToken,
-        recipientId: senderId,
-        text: "👋 Hi! This is a static auto-reply test from MyAutoBot."
-      });
-
-      console.log("✅ Auto-reply attempted");
-    }
-  }
-
-  return res.sendStatus(200);
 });
-
-
 
 module.exports = router;
