@@ -402,52 +402,74 @@ router.get('/webhook/instagram', (req, res) => {
 router.post("/webhook/instagram", async (req, res) => {
   try {
     const body = req.body;
+    const CHAT_COST = 5; // Cost per AI interaction
 
-    // Only handle Instagram events
-    if (body.object !== "instagram") {
-      return res.sendStatus(200);
-    }
+    if (body.object !== "instagram") return res.sendStatus(200);
 
     for (const entry of body.entry || []) {
       const events = entry.messaging || [];
 
       for (const event of events) {
-        console.log("📩 IG EVENT:", event);
-
-        // Ignore echoes / self messages
-        if (event.message?.is_echo || event.message?.is_self) {
-          console.log("↩️ Echo ignored");
-          continue;
-        }
-
-        // Only text messages
-        if (!event.message || !event.message.text) {
-          console.log("⚠️ Non-text message ignored");
-          continue;
-        }
+        // Filter out echoes and non-text messages
+        if (event.message?.is_echo || !event.message?.text) continue;
 
         const senderId = event.sender?.id;
-        if (!senderId) {
-          console.log("❌ Missing senderId");
-          continue;
+        const recipientId = event.recipient?.id; // Your IG Business ID
+        const userMessage = event.message.text;
+
+        /* 1. ATOMIC USER LOOKUP & TOKEN DEDUCTION */
+        const user = await User.findOneAndUpdate(
+          { 
+            instagramBusinessId: recipientId, 
+            "botConfig.status": "active", 
+            tokens: { $gte: CHAT_COST } 
+          },
+          { $inc: { tokens: -CHAT_COST } },
+          { new: true }
+        ).lean();
+
+        if (!user) {
+          console.log(`❌ IG BLOCK: Business ${recipientId} inactive or low tokens.`);
+          continue; 
         }
 
-        /* ===============================
-           🔥 HARDCODED TEST TOKEN
-           =============================== */
-        const INSTAGRAM_TEST_TOKEN =
-          "IGAAMsCB9K6OFBZAGFHZAFhobFozOWNzYkVQUmVraW5lRjZArVlg5VEJwcUlzVnFoTHYycThLQnNYbHFnRnNsWEFCMEFCVXpjRFRkRDdFTXJSUUgyWEZArd3liWlVWZAkxQdjVXSVZAKOFhibmgzd1lLX3Vtc2NJNWdlMG1yMzdmNHotbwZDZD";
+        /* 2. RETRIEVE CONVERSATION MEMORY */
+        // This requires the 'Conversation' model to be imported at the top of the file
+        const historyDoc = await Conversation.findOne({ 
+          user: user._id, 
+          customerIdentifier: senderId 
+        }).lean();
 
-        // Send reply EXACTLY like your curl
+        const pastMessages = historyDoc ? historyDoc.messages.slice(-6).map(m => ({
+          role: m.role === 'user' ? 'user' : 'assistant',
+          content: m.text
+        })) : [];
+
+        /* 3. CALL VPS AI FOR DYNAMIC RESPONSE */
+        const systemContent = `${user.botConfig.systemPrompt}\n\n[KNOWLEDGE_BASE]\n${user.botConfig.ragFile}`.trim();
+
+        const vpsPayload = {
+          model: user.botConfig.model?.primary || "llama3",
+          messages: [
+            { role: "system", content: systemContent },
+            ...pastMessages,
+            { role: "user", content: userMessage }
+          ],
+          options: { temperature: 0.2 }
+        };
+
+        const aiResponse = await axios.post(`${process.env.VPS_AI_URL}/api/chat`, vpsPayload);
+        const botReply = aiResponse.data?.message?.content || "I'm sorry, I couldn't process that.";
+
+        /* 4. SEND REPLY (Using your HARDCODED TOKEN) */
+        // Replace this string with a NEW token if you still get OAuth errors
+        const INSTAGRAM_TEST_TOKEN = "IGAAMsCB9K6OFBZAGFHZAFhobFozOWNzYkVQUmVraW5lRjZArVlg5VEJwcUlzVnFoTHYycThLQnNYbHFnRnNsWEFCMEFCVXpjRFRkRDdFTXJSUUgyWEZArd3liWlVWZAkxQdjVXSVZAKOFhibmgzd1lLX3Vtc2NJNWdlMG1yMzdmNHotbwZDZD";
+
         await axios.post(
           "https://graph.instagram.com/v21.0/me/messages",
           {
-            message: JSON.stringify({
-              text: "👋 Hi! This is a HARD-CODED test reply from MyAutoBot."
-            }),
-            recipient: JSON.stringify({
-              id: senderId
-            })
+            message: JSON.stringify({ text: botReply }),
+            recipient: JSON.stringify({ id: senderId })
           },
           {
             headers: {
@@ -457,20 +479,31 @@ router.post("/webhook/instagram", async (req, res) => {
           }
         );
 
-        console.log("✅ Static auto-reply sent (HARDCODED TOKEN)");
+        /* 5. UPDATE CONVERSATION LOGS */
+        await Conversation.findOneAndUpdate(
+          { user: user._id, customerIdentifier: senderId },
+          {
+            $push: {
+              messages: [
+                { role: 'user', text: userMessage, timestamp: new Date() },
+                { role: 'bot', text: botReply, timestamp: new Date() }
+              ]
+            },
+            $set: { lastInteraction: new Date() }
+          },
+          { upsert: true }
+        );
+
+        console.log(`✅ AI Response sent to IG: ${senderId} | Bal: ${user.tokens}`);
       }
     }
-
     return res.sendStatus(200);
   } catch (err) {
-    console.error(
-      "🔥 Instagram webhook error:",
-      err.response?.data || err.message
-    );
-
-    // Meta requires 200 even on failure
+    // Detailed error logging to help you catch token expiration
+    console.error("🔥 Instagram webhook error:", err.response?.data || err.message);
     return res.sendStatus(200);
   }
 });
+
 
 module.exports = router;
