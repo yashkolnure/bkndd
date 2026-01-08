@@ -189,6 +189,7 @@ ${ragFile}
             vpsPayload,
             { timeout: 45000 }
         );
+        console.log("VPS AI Response:", aiResponse.data);
 
         const botReply = aiResponse.data?.message?.content || "Engine synthesis failed.";
 
@@ -224,6 +225,7 @@ ${ragFile}
             message: "Neural Engine temporarily disconnected. Please try again later."
         });
     }
+    
 });
 /**
  * NEURAL DIAGNOSTICS ROUTE
