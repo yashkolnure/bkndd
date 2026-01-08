@@ -7,6 +7,7 @@ const UserSchema = new mongoose.Schema({
   password: { type: String, required: true },
   contact: { type: String }, // Added for your MyAutoBot registration
   tokens: { type: Number, default: 100 },
+  apiKey: { type: String, unique: true, sparse: true },
 
   // ---------------- BOT ENGINE CONFIGURATION ----------------
   botConfig: {
@@ -39,6 +40,8 @@ const UserSchema = new mongoose.Schema({
   whatsappEnabled: { type: Boolean, default: false },
   whatsappBusinessId: { type: String, default: null },
   whatsappToken: { type: String, default: null },
+
+  
 
   // ---------------- PASSWORD RESET ----------------
   resetPasswordToken: String,

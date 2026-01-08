@@ -563,4 +563,42 @@ router.post("/webhook/instagram", async (req, res) => {
     }
   }
 });
+
+
+router.post("/generate-api-key/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    // Generate a secure 32-byte key with a prefix
+    const buffer = crypto.randomBytes(32);
+    const newKey = `ma_${buffer.toString("hex")}`; // "ma_" stands for MyAutoBot
+
+    const user = await User.findByIdAndUpdate(
+      userId,
+      { apiKey: newKey },
+      { new: true }
+    );
+
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    res.json({ success: true, apiKey: newKey });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server Error" });
+  }
+});
+
+// @route   GET api/user/get-api-key/:userId
+router.get("/get-api-key/:userId", async (req, res) => {
+  try {
+    const user = await User.findById(req.params.userId).select("apiKey");
+    if (!user) return res.status(404).json({ message: "User not found" });
+    
+    res.json({ apiKey: user.apiKey || null });
+  } catch (err) {
+    res.status(500).json({ message: "Server Error" });
+  }
+});
+
+
 module.exports = router;

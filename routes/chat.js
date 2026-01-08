@@ -179,7 +179,7 @@ ${ragFile}
             ],
             stream: false,
             options: {
-                num_thread: 8,
+                num_thread: 24,
                 temperature: 0.2
             }
         };
