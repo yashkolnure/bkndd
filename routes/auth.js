@@ -154,35 +154,124 @@ router.post("/webhook", async (req, res) => {
 /* =========================================================
    AUTH: REGISTER
 ========================================================= */
+const nodemailer = require('nodemailer');
+const Otp = require('../models/Otp'); // Ensure this import exists!
+
+// Configure the transporter
+const transporter = nodemailer.createTransport({
+  host: process.env.EMAIL_HOST,
+  port: parseInt(process.env.EMAIL_PORT),
+  secure: true, // Use true for port 465
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
+  },
+  // Hostinger/Titan sometimes requires these extra settings
+  tls: {
+    rejectUnauthorized: false 
+  }
+});
+
 router.post("/register", async (req, res) => {
-  const { name, password } = req.body;
+  const { name, password, contact } = req.body;
   const email = req.body.email.toLowerCase().trim();
 
   try {
+    // 1. Check if user already exists
     if (await User.findOne({ email })) {
-      return res.status(400).json({ message: "User exists" });
+      return res.status(400).json({ message: "Operator already exists in network." });
     }
 
-    const user = new User({ name, email, password });
-    const salt = await bcrypt.genSalt(10);
-    user.password = await bcrypt.hash(password, salt);
-    await user.save();
+    // 2. Generate 6-digit OTP
+    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    
+    // 3. Save to temporary OTP collection
+    await Otp.findOneAndUpdate(
+      { email }, 
+      { name, password, contact, otpCode, createdAt: Date.now() }, 
+      { upsert: true, new: true }
+    );
 
+    // 4. Send the Email
+    const mailOptions = {
+      from: `"MyAutoBot Support" <${process.env.EMAIL_USER}>`,
+      to: email,
+      subject: "MyAutoBot Synchronization Code",
+      html: `
+        <div style="font-family: sans-serif; padding: 20px; background: #0b031a; color: white; border-radius: 10px;">
+          <h2 style="color: #a855f7;">Identity Verification</h2>
+          <p>Use the code below to initialize your MyAutoBot instance:</p>
+          <div style="font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #a855f7; margin: 20px 0;">
+            ${otpCode}
+          </div>
+          <p style="font-size: 12px; color: #64748b;">This code expires in 5 minutes.</p>
+        </div>
+      `
+    };
+
+    await transporter.sendMail(mailOptions);
+
+    res.json({ message: "Verification code dispatched." });
+  } catch (error) {
+    // This will now print the EXACT error in your server console
+    console.error("DETAILED REGISTER ERROR:", error);
+    res.status(500).json({ message: "Internal server error during registration." });
+  }
+});
+
+// --- Add this to your authRoutes.js ---
+router.post("/verify-otp", async (req, res) => {
+  const { email, otp } = req.body;
+
+  try {
+    // 1. Find the temporary registration data
+    const record = await Otp.findOne({ email });
+
+    if (!record) {
+      return res.status(400).json({ message: "Verification session expired. Please register again." });
+    }
+
+    // 2. Check if OTP matches
+    if (record.otpCode !== otp) {
+      return res.status(400).json({ message: "Invalid synchronization code." });
+    }
+
+    // 3. OTP is correct -> Create the permanent User
+    // Note: Password was already hashed if you followed previous steps, 
+    // but if not, hash it here:
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(record.password, salt);
+
+    const newUser = new User({
+      name: record.name,
+      email: record.email,
+      password: hashedPassword,
+      contact: record.contact,
+      status: 'active'
+    });
+
+    await newUser.save();
+
+    // 4. Cleanup: Delete the OTP record so it can't be used again
+    await Otp.deleteOne({ email });
+
+    // 5. Generate JWT for immediate login
     const token = jwt.sign(
-      { id: user._id },
-      process.env.JWT_SECRET,
+      { id: newUser._id }, 
+      process.env.JWT_SECRET, 
       { expiresIn: "1d" }
     );
 
     res.json({
       token,
-      user: { id: user._id, name: user.name }
+      user: { id: newUser._id, name: newUser.name }
     });
-  } catch {
-    res.status(500).json({ message: "Registration failed" });
+
+  } catch (error) {
+    console.error("OTP VERIFICATION ERROR:", error);
+    res.status(500).json({ message: "Final synchronization failed." });
   }
 });
-
 /* =========================================================
    AUTH: LOGIN
 ========================================================= */
@@ -398,77 +487,80 @@ router.get('/webhook/instagram', (req, res) => {
     return res.sendStatus(403);
   }
 });
+
+// A simple cache to prevent processing the same message twice (Deduplication)
+const processedMessages = new Set();
+
 router.post("/webhook/instagram", async (req, res) => {
-  try {
-    const body = req.body;
-    if (body.object !== "instagram") return res.sendStatus(200);
+  const body = req.body;
 
-    for (const entry of body.entry || []) {
-      const events = entry.messaging || [];
+  // 1. Respond immediately to Meta to stop retries
+  res.sendStatus(200);
 
-      for (const event of events) {
-        // 1. Basic Filters
-        if (event.message?.is_echo || !event.message?.text) continue;
+  if (body.object !== "instagram") return;
 
-        const senderId = event.sender?.id;
-        const recipientId = event.recipient?.id; 
-        const userMessage = event.message.text;
+  // 2. Process the logic asynchronously (background)
+  for (const entry of body.entry || []) {
+    const events = entry.messaging || [];
 
-        /* ==========================================================
-           2. RESOLVE USER FROM DATABASE
-           Pulls the full user document to get the ID and Access Token.
-           ========================================================== */
-        const userDoc = await User.findOne({ instagramBusinessId: recipientId }).lean();
-        
-        if (!userDoc || !userDoc.instagramToken) {
-          console.log(`❌ IG Webhook: No user or token found for Business ID: ${recipientId}`);
-          continue;
-        }
+    for (const event of events) {
+      const senderId = event.sender?.id;
+      const recipientId = event.recipient?.id;
+      const messageId = event.message?.mid; // Unique message ID
+      const userMessage = event.message?.text;
 
-        const userId = userDoc._id.toString();
-        const activeToken = userDoc.instagramToken; // Pulling token from DB
-        const localApiUrl = `http://localhost:5000/api/chat/public-message/${userId}`;
+      // 3. Basic Filters & Deduplication
+      if (event.message?.is_echo || !userMessage) continue;
+      if (processedMessages.has(messageId)) continue;
 
-        /* ==========================================================
-           3. CALL LOCAL CHAT API
-           Handles token deduction (5 tokens) and AI logic.
-           ========================================================== */
-        const chatResponse = await axios.post(localApiUrl, {
-          message: userMessage,
-          customerData: { name: senderId }
-        });
+      // Add to cache and set cleanup (to prevent memory leaks)
+      processedMessages.add(messageId);
+      setTimeout(() => processedMessages.delete(messageId), 60000); // Clear after 1 min
 
-        const botReply = chatResponse.data?.response || "I'm sorry, I couldn't process that.";
-
-        /* ==========================================================
-           4. SEND THE AI REPLY TO INSTAGRAM (Dynamic Token)
-           ========================================================== */
-        await axios.post(
-          "https://graph.instagram.com/v21.0/me/messages",
-          {
-            message: JSON.stringify({ text: botReply }),
-            recipient: JSON.stringify({ id: senderId })
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${activeToken}`, // Use token from User table
-              "Content-Type": "application/json"
-            }
+      /* ==========================================================
+         BACKGROUND PROCESSING
+         ========================================================== */
+      (async () => {
+        try {
+          const userDoc = await User.findOne({ instagramBusinessId: recipientId }).lean();
+          
+          if (!userDoc || !userDoc.instagramToken) {
+            return console.log(`❌ IG Webhook: No user/token for ID: ${recipientId}`);
           }
-        );
 
-        console.log(`✅ Success: AI reply sent via DB token for User ${userDoc.name}`);
-      }
+          const userId = userDoc._id.toString();
+          const activeToken = userDoc.instagramToken;
+          const localApiUrl = `http://localhost:5000/api/chat/public-message/${userId}`;
+
+          // 4. Call Local Chat API
+          const chatResponse = await axios.post(localApiUrl, {
+            message: userMessage,
+            customerData: { name: senderId }
+          });
+
+          const botReply = chatResponse.data?.response || "I'm sorry, I couldn't process that.";
+
+          // 5. Send to Instagram (Corrected Object Structure)
+          // Note: Axios automatically stringifies objects when Content-Type is application/json
+          await axios.post(
+            `https://graph.instagram.com/v21.0/me/messages`,
+            {
+              recipient: { id: senderId },
+              message: { text: botReply }
+            },
+            {
+              params: { access_token: activeToken }, // Better to pass token in params
+              headers: { "Content-Type": "application/json" }
+            }
+          );
+
+          console.log(`✅ AI reply sent to ${userDoc.name} for message: ${userMessage}`);
+
+        } catch (err) {
+          console.error("🔥 Processing Error:", err.response?.data || err.message);
+        }
+      })();
     }
-
-    return res.sendStatus(200);
-  } catch (err) {
-    console.error("🔥 Instagram Webhook Error:", {
-        msg: err.message,
-        vpsError: err.response?.data
-    });
-    return res.sendStatus(200);
   }
 });
-
 module.exports = router;
