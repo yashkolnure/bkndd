@@ -49,7 +49,7 @@ router.post('/message', auth, async (req, res) => {
             prompt: `System: ${config.instructions}\n\nCustomer: ${message}\nAI Assistant:`,
             stream: false
         };
-
+        
         const aiResponse = await axios.post(`${process.env.VPS_AI_URL}/api/generate`, vpsPayload, { timeout: 15000 });
         res.json({ response: aiResponse.data.response });
     } catch (err) {
@@ -108,7 +108,7 @@ router.post('/public-message/:userId', async (req, res) => {
     const { userId } = req.params;
     const CHAT_COST = 5;
 
-    // 1. Validation & ID Format Check
+    // 1. Validation
     if (!message || message.trim().length === 0) {
         return res.status(400).json({ success: false, message: "Transmission empty." });
     }
@@ -118,9 +118,7 @@ router.post('/public-message/:userId', async (req, res) => {
     }
 
     try {
-        /* 2. ATOMIC FETCH & DEDUCTION
-           Retrieves user config and deducts 5 tokens in one step.
-        */
+        // 2. ATOMIC FETCH & DEDUCTION
         const user = await User.findOneAndUpdate(
             { 
                 _id: new mongoose.Types.ObjectId(userId), 
@@ -138,16 +136,13 @@ router.post('/public-message/:userId', async (req, res) => {
             });
         }
 
-        /* 3. RETRIEVE CONVERSATION MEMORY
-           Fetch the last few interactions to provide context to the AI.
-        */
+        // 3. RETRIEVE CONVERSATION MEMORY
         const displayName = customerData?.name || "Guest";
         const conversationHistory = await Conversation.findOne({ 
             user: user._id, 
             customerIdentifier: displayName 
         }).lean();
 
-        // Limit memory to the last 6 messages (3 exchanges) to keep the prompt efficient
         const memoryLimit = 6;
         const pastMessages = conversationHistory 
             ? conversationHistory.messages.slice(-memoryLimit).map(m => ({
@@ -156,46 +151,45 @@ router.post('/public-message/:userId', async (req, res) => {
             })) 
             : [];
 
-        /* 4. PASS-THRU COMPILATION
-           Prepares the System prompt with RAG knowledge.
-        */
+        // 4. PREPARE PAYLOAD
         const { systemPrompt, ragFile, model } = user.botConfig;
-        const systemContent = `
-${systemPrompt}
-
-[KNOWLEDGE_BASE]
-${ragFile}
-`.trim();
-
-        /* 5. VPS AI REQUEST WITH MEMORY INJECTION
-           The 'messages' array now includes: System Prompt -> Memory -> New Message
-        */
         const vpsPayload = {
             model: model?.primary || "llama3",
             messages: [
-                { role: "system", content: systemContent },
-                ...pastMessages, // Injected Memory
+                { role: "system", content: `${systemPrompt}\n\n[KNOWLEDGE_BASE]\n${ragFile}`.trim() },
+                ...pastMessages,
                 { role: "user", content: message }
             ],
             stream: false,
             options: {
-                num_thread: 24,
-                temperature: 0.2
+                num_thread: 16, // Optimized for 24-core VPS
+                temperature: 0.2,
+                num_ctx: 4096
             }
         };
 
-        const aiResponse = await axios.post(
-            `${process.env.VPS_AI_URL}/api/chat`,
-            vpsPayload,
-            { timeout: 45000 }
-        );
-        console.log("VPS AI Response:", aiResponse.data);
+        // 5. VPS AI REQUEST WITH SAFE ERROR HANDLING
+        let botReply = "";
+        try {
+            const aiResponse = await axios.post(
+                `${process.env.VPS_AI_URL}/api/chat`,
+                vpsPayload,
+                { timeout: 120000 } // Increased to 2 minutes
+            );
+            botReply = aiResponse.data?.message?.content || "Engine synthesis failed.";
+        } catch (apiErr) {
+            console.error("🔥 VPS TIMEOUT/ERROR. REFUNDING TOKENS.");
+            
+            // ROLLBACK: Refund the 5 tokens because the AI failed
+            await User.findByIdAndUpdate(user._id, { $inc: { tokens: CHAT_COST } });
 
-        const botReply = aiResponse.data?.message?.content || "Engine synthesis failed.";
+            return res.status(502).json({
+                success: false,
+                message: "Neural Engine timed out. Tokens have been refunded."
+            });
+        }
 
-        /* 6. CONVERSATION LOGGING
-           Updates memory with the latest user message and AI response.
-        */
+        // 6. CONVERSATION LOGGING
         await Conversation.findOneAndUpdate(
             { user: user._id, customerIdentifier: displayName },
             {
@@ -210,8 +204,8 @@ ${ragFile}
             { upsert: true }
         );
 
-        /* 7. FINAL RESPONSE */
-        console.log(`✅ [MEMORY-ACTIVE] ${user.name} | Deducted 5 | Bal: ${user.tokens}`);
+        // 7. FINAL SUCCESS RESPONSE
+        console.log(`✅ [LAUNCH-OK] ${user.name} | Bal: ${user.tokens - CHAT_COST}`);
         return res.json({ 
             success: true, 
             response: botReply,
@@ -219,15 +213,14 @@ ${ragFile}
         });
 
     } catch (err) {
-        console.error("🔥 CRITICAL ENGINE ERROR:", err.message);
-        console.error("🔥 OLLAMA ERROR DETAILS:", aiResponse.data);
-        return res.status(502).json({
+        console.error("🔥 GENERAL CRITICAL ERROR:", err.stack);
+        return res.status(500).json({
             success: false,
-            message: "Neural Engine temporarily disconnected. Please try again later."
+            message: "System anomaly detected."
         });
     }
-    
 });
+
 /**
  * NEURAL DIAGNOSTICS ROUTE
  * Use this to verify why a User ID is being blocked.
