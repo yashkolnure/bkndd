@@ -168,7 +168,7 @@ router.get('/public-info/:userId', async (req, res) => {
             ],
             stream: false,
             options: {
-                num_thread: 16, 
+                num_thread: 24, 
                 temperature: 0.2,
                 num_ctx: 4096
             }
