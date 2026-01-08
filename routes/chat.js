@@ -102,23 +102,27 @@ router.get('/public-info/:userId', async (req, res) => {
 });
 /**
  * --- 5. PUBLIC: CHAT INTERFACE (Lead Scanning + Tokens) ---
- */
-router.post('/public-message/:userId', async (req, res) => {
+ */router.post('/public-message/:userId', async (req, res) => {
     const { message, customerData } = req.body;
     const { userId } = req.params;
     const CHAT_COST = 5;
 
+    console.log(`\n--- [NEURAL REQUEST START] Node ID: ${userId} ---`);
+
     // 1. Validation
     if (!message || message.trim().length === 0) {
+        console.log("❌ Debug: Empty message received.");
         return res.status(400).json({ success: false, message: "Transmission empty." });
     }
 
     if (!mongoose.Types.ObjectId.isValid(userId)) {
+        console.log(`❌ Debug: Invalid ID format [${userId}]`);
         return res.status(400).json({ success: false, message: "Invalid Neural Node ID format." });
     }
 
     try {
         // 2. ATOMIC FETCH & DEDUCTION
+        console.log("Step 2: Authenticating Node & Deducting Credits...");
         const user = await User.findOneAndUpdate(
             { 
                 _id: new mongoose.Types.ObjectId(userId), 
@@ -130,6 +134,7 @@ router.post('/public-message/:userId', async (req, res) => {
         ).lean();
 
         if (!user) {
+            console.log("❌ Debug: Auth failed - Either ID is wrong, status is not 'active', or tokens < 5");
             return res.status(403).json({ 
                 success: false, 
                 message: "Neural Node is offline. Inactive or Insufficient Credits." 
@@ -137,6 +142,7 @@ router.post('/public-message/:userId', async (req, res) => {
         }
 
         // 3. RETRIEVE CONVERSATION MEMORY
+        console.log(`Step 3: Fetching memory for customer: ${customerData?.name || "Guest"}`);
         const displayName = customerData?.name || "Guest";
         const conversationHistory = await Conversation.findOne({ 
             user: user._id, 
@@ -162,34 +168,52 @@ router.post('/public-message/:userId', async (req, res) => {
             ],
             stream: false,
             options: {
-                num_thread: 16, // Optimized for 24-core VPS
+                num_thread: 16, 
                 temperature: 0.2,
                 num_ctx: 4096
             }
         };
 
-        // 5. VPS AI REQUEST WITH SAFE ERROR HANDLING
+        // 5. VPS AI REQUEST WITH DEEP DEBUGGING
+        console.log(`Step 5: Sending Request to AI Engine: ${process.env.VPS_AI_URL}/api/chat`);
         let botReply = "";
         try {
+            const aiStartTime = Date.now();
             const aiResponse = await axios.post(
                 `${process.env.VPS_AI_URL}/api/chat`,
                 vpsPayload,
-                { timeout: 120000 } // Increased to 2 minutes
+                { timeout: 120000 } 
             );
+            const aiEndTime = Date.now();
+            console.log(`✅ Step 5 Success: AI responded in ${((aiEndTime - aiStartTime) / 1000).toFixed(2)}s`);
+            
             botReply = aiResponse.data?.message?.content || "Engine synthesis failed.";
         } catch (apiErr) {
-            console.error("🔥 VPS TIMEOUT/ERROR. REFUNDING TOKENS.");
+            console.error("\n--- [AI ENGINE CRITICAL ERROR] ---");
+            console.error("Error Code:", apiErr.code); // e.g. ECONNREFUSED
+            console.error("Error Message:", apiErr.message);
             
-            // ROLLBACK: Refund the 5 tokens because the AI failed
+            if (apiErr.response) {
+                // The server responded with a status code (404, 500, etc)
+                console.error("Status Code:", apiErr.response.status);
+                console.error("Response Data:", apiErr.response.data);
+            } else if (apiErr.request) {
+                // The request was made but no response was received
+                console.error("No response received from Engine. Is OLLAMA_HOST set to 0.0.0.0?");
+            }
+
+            console.log("🔄 Triggering Token Refund...");
             await User.findByIdAndUpdate(user._id, { $inc: { tokens: CHAT_COST } });
 
             return res.status(502).json({
                 success: false,
-                message: "Neural Engine timed out. Tokens have been refunded."
+                message: "Neural Engine connection failed. Tokens have been refunded.",
+                debug_code: apiErr.code
             });
         }
 
         // 6. CONVERSATION LOGGING
+        console.log("Step 6: Archiving transaction to history...");
         await Conversation.findOneAndUpdate(
             { user: user._id, customerIdentifier: displayName },
             {
@@ -205,7 +229,7 @@ router.post('/public-message/:userId', async (req, res) => {
         );
 
         // 7. FINAL SUCCESS RESPONSE
-        console.log(`✅ [LAUNCH-OK] ${user.name} | Bal: ${user.tokens - CHAT_COST}`);
+        console.log(`--- [NEURAL REQUEST SUCCESS] New Balance: ${user.tokens} ---\n`);
         return res.json({ 
             success: true, 
             response: botReply,
@@ -213,7 +237,8 @@ router.post('/public-message/:userId', async (req, res) => {
         });
 
     } catch (err) {
-        console.error("🔥 GENERAL CRITICAL ERROR:", err.stack);
+        console.error("\n🔥 [GENERAL SYSTEM CRASH] 🔥");
+        console.error(err.stack);
         return res.status(500).json({
             success: false,
             message: "System anomaly detected."
