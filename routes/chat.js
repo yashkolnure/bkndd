@@ -220,6 +220,7 @@ ${ragFile}
 
     } catch (err) {
         console.error("🔥 CRITICAL ENGINE ERROR:", err.message);
+        console.error("🔥 OLLAMA ERROR DETAILS:", aiResponse.data);
         return res.status(502).json({
             success: false,
             message: "Neural Engine temporarily disconnected. Please try again later."
