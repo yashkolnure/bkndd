@@ -9,6 +9,12 @@ const UserSchema = new mongoose.Schema({
   tokens: { type: Number, default: 100 },
   apiKey: { type: String, unique: true, sparse: true },
 
+
+  // ---------------- REFERRAL SYSTEM ----------------
+  referralCode: { type: String, unique: true }, // e.g., "YASH77"
+  referredBy: { type: String, default: null },   // Stores the referralCode of the inviter
+  referralCount: { type: Number, default: 0 },   // How many people this user invited
+  
   // ---------------- BOT ENGINE CONFIGURATION ----------------
   botConfig: {
     status: { type: String, default: "draft" },

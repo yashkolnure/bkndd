@@ -173,26 +173,24 @@ const transporter = nodemailer.createTransport({
 });
 
 router.post("/register", async (req, res) => {
-  const { name, password, contact } = req.body;
+  // Destructure refCode from body; if it doesn't exist, it remains undefined/null
+  const { name, password, contact, refCode } = req.body;
   const email = req.body.email.toLowerCase().trim();
 
   try {
-    // 1. Check if user already exists
     if (await User.findOne({ email })) {
       return res.status(400).json({ message: "Operator already exists in network." });
     }
 
-    // 2. Generate 6-digit OTP
     const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
     
-    // 3. Save to temporary OTP collection
+    // Logic remains same, we just include refCode in the object
     await Otp.findOneAndUpdate(
       { email }, 
-      { name, password, contact, otpCode, createdAt: Date.now() }, 
+      { name, password, contact, otpCode, refCode, createdAt: Date.now() }, 
       { upsert: true, new: true }
     );
 
-    // 4. Send the Email
     const mailOptions = {
       from: `"MyAutoBot Support" <${process.env.EMAIL_USER}>`,
       to: email,
@@ -210,35 +208,61 @@ router.post("/register", async (req, res) => {
     };
 
     await transporter.sendMail(mailOptions);
-
     res.json({ message: "Verification code dispatched." });
   } catch (error) {
-    // This will now print the EXACT error in your server console
     console.error("DETAILED REGISTER ERROR:", error);
     res.status(500).json({ message: "Internal server error during registration." });
   }
 });
-
 // --- Add this to your authRoutes.js ---
+
 router.post("/verify-otp", async (req, res) => {
   const { email, otp } = req.body;
 
   try {
-    // 1. Find the temporary registration data
     const record = await Otp.findOne({ email });
-
-    if (!record) {
-      return res.status(400).json({ message: "Verification session expired. Please register again." });
+    if (!record || record.otpCode !== otp) {
+      return res.status(400).json({ message: "Invalid or expired synchronization code." });
     }
 
-    // 2. Check if OTP matches
-    if (record.otpCode !== otp) {
-      return res.status(400).json({ message: "Invalid synchronization code." });
-    }
+    let startingTokens = 500;
+    let referralSource = null;
+    const BONUS_AMOUNT = 50;
 
-    // 3. OTP is correct -> Create the permanent User
-    // Note: Password was already hashed if you followed previous steps, 
-    // but if not, hash it here:
+    if (record.refCode) {
+      console.log(`🔍 Processing referral protocol for code: ${record.refCode}`);
+
+      // 1. Try finding by the dedicated referralCode field first (STRICT MATCH)
+      let inviter = await User.findOne({ referralCode: record.refCode.toUpperCase() });
+
+      // 2. FALLBACK: Match the end of the ID string (LAZY MATCH)
+      // We use $expr and $toString to handle the ObjectId type mismatch
+      if (!inviter) {
+        inviter = await User.findOne({
+          $expr: {
+            $regexMatch: {
+              input: { $toString: "$_id" },
+              regex: record.refCode + "$", // Matches the end of the string
+              options: "i"
+            }
+          }
+        });
+      }
+
+      if (inviter) {
+        startingTokens = 550; 
+        referralSource = inviter.referralCode || record.refCode.toUpperCase();
+
+        inviter.tokens += BONUS_AMOUNT;
+        inviter.referralCount += 1;
+        await inviter.save();
+
+        console.log(`✅ SUCCESS: ${inviter.email} awarded +50. New node ${email} starting with 550.`);
+      } else {
+        console.log(`⚠️ REFERRAL FAILED: No inviter found for code ${record.refCode}`);
+      }
+    }
+    // 3. Create the permanent User Instance
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(record.password, salt);
 
@@ -247,31 +271,36 @@ router.post("/verify-otp", async (req, res) => {
       email: record.email,
       password: hashedPassword,
       contact: record.contact,
-      status: 'active'
+      status: 'active',
+      tokens: startingTokens,      // 550 if referred, 500 if not
+      referredBy: referralSource
     });
 
     await newUser.save();
-
-    // 4. Cleanup: Delete the OTP record so it can't be used again
+    
+    // 4. Cleanup temporary link
     await Otp.deleteOne({ email });
 
-    // 5. Generate JWT for immediate login
-    const token = jwt.sign(
-      { id: newUser._id }, 
-      process.env.JWT_SECRET, 
-      { expiresIn: "1d" }
-    );
+    // 5. Response with JWT
+    const token = jwt.sign({ id: newUser._id }, process.env.JWT_SECRET, { expiresIn: "1d" });
 
     res.json({
+      success: true,
       token,
-      user: { id: newUser._id, name: newUser.name }
+      user: { 
+        id: newUser._id, 
+        name: newUser.name, 
+        tokens: newUser.tokens 
+      }
     });
 
   } catch (error) {
-    console.error("OTP VERIFICATION ERROR:", error);
-    res.status(500).json({ message: "Final synchronization failed." });
+    console.error("CRITICAL VERIFICATION ERROR:", error);
+    res.status(500).json({ message: "Identity verification failed." });
   }
 });
+
+
 /* =========================================================
    AUTH: LOGIN
 ========================================================= */
@@ -600,5 +629,74 @@ router.get("/get-api-key/:userId", async (req, res) => {
   }
 });
 
+// routes/auth.js
+// routes/auth.js
+
+router.patch("/update-referral", async (req, res) => {
+  const { userId, referralCode } = req.body;
+
+  try {
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+    // Only set the code if it doesn't already exist
+    if (!user.referralCode) {
+      user.referralCode = referralCode.toUpperCase();
+      await user.save();
+      console.log(`✅ Locked referral code ${referralCode} for user ${user.email}`);
+      return res.json({ success: true, message: "Referral code generated and saved." });
+    }
+
+    res.json({ success: true, message: "Code already synchronized." });
+  } catch (err) {
+    console.error("DB Update Error:", err);
+    res.status(500).json({ success: false, message: "Database update failure." });
+  }
+});
+
+// routes/auth.js
+
+router.get("/validate-ref/:code", async (req, res) => {
+  const { code } = req.params;
+
+  try {
+    // 1. Try finding by the professional referralCode field
+    let inviter = await User.findOne({ referralCode: code.toUpperCase() });
+
+    // 2. If not found, try the "ID Slice" (Lazy Fix)
+    if (!inviter) {
+      inviter = await User.findOne({ 
+        _id: { $regex: new RegExp(code + "$", "i") } 
+      });
+    }
+
+    if (inviter) {
+      return res.json({ valid: true, owner: inviter.name });
+    }
+
+    res.json({ valid: false });
+  } catch (err) {
+    res.status(500).json({ valid: false });
+  }
+});
+
+// backend/routes/auth.js (or user.js)
+router.get("/user-profile/:userId", async (req, res) => {
+  try {
+    const user = await User.findById(req.params.userId)
+      .select("tokens referralCode referralCount"); // Explicitly select these fields
+
+    if (!user) return res.status(404).json({ message: "Operator not found" });
+
+    res.json({
+      success: true,
+      tokens: user.tokens,
+      referralCode: user.referralCode,
+      referralCount: user.referralCount
+    });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+});
 
 module.exports = router;

@@ -13,10 +13,16 @@ const OtpSchema = new mongoose.Schema({
   name: { type: String },
   password: { type: String },
   contact: { type: String },
+  // --- ADD THIS FIELD ---
+  refCode: { 
+    type: String, 
+    default: null 
+  },
+  // ----------------------
   createdAt: { 
     type: Date, 
     default: Date.now, 
-    expires: 300 // This entry will auto-delete from MongoDB after 5 minutes
+    expires: 300 // Auto-deletes after 5 minutes
   }
 });
 

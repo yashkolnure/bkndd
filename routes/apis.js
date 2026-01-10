@@ -2,6 +2,7 @@ const User = require("../models/User");
 const express = require("express");
 const router = express.Router();
 const axios = require("axios");
+const verifyApiKey = require('../middleware/apiAuth');
 
 
 router.get("/integrations/manual/instagram/:userId", async (req, res) => {
@@ -64,49 +65,122 @@ router.post("/integrations/manual/instagram", async (req, res) => {
 
 
 // --- PUBLIC CHAT ENDPOINT ---
+// --- PUBLIC CHAT ENDPOINT (OPTIMIZED) ---
 router.post("/v1/chat/completions", async (req, res) => {
   const apiKey = req.headers["x-api-key"];
-  const { messages, model } = req.body;
+  const { messages, model, customerData } = req.body;
+  const CHAT_COST = 5;
 
   if (!apiKey) return res.status(401).json({ error: "API Key Required" });
 
   try {
-    // 1. Verify User and API Key
-    const user = await User.findOne({ apiKey });
-    if (!user) return res.status(401).json({ error: "Invalid API Key" });
+    // 1. ATOMIC VERIFY & DEDUCT 
+    // This prevents "race conditions" where a user could spend more than they have
+    const user = await User.findOneAndUpdate(
+      { apiKey: apiKey, tokens: { $gte: CHAT_COST } },
+      { $inc: { tokens: -CHAT_COST } },
+      { new: true }
+    );
 
-    // 2. Check Token Balance (Cost: 5 tokens per call)
-    const COST = 5;
-    if (user.tokens < COST) {
-      return res.status(402).json({ error: "Insufficient Tokens. Balance: " + user.tokens });
+    if (!user) {
+      return res.status(402).json({ 
+        success: false, 
+        error: "Insufficient Tokens or Invalid API Key." 
+      });
     }
 
-    // 3. Forward to your VPS-hosted LLM (Ollama Example)
-    // Adjust URL if your LLM is on a different port/IP
-    const llmResponse = await axios.post("http://51.79.175.189:11434/api/chat", {
-      model: model || user.botConfig.model.primary || "llama3",
-      messages: messages,
-      stream: false
-    });
+    // 2. PREPARE SYSTEM PROMPT (Injection of RAG/Knowledge)
+    // Ensures the external API call respects the Bot's instructions
+    const systemMessage = {
+      role: "system",
+      content: `${user.botConfig.systemPrompt}\n\n[KNOWLEDGE_BASE]\n${user.botConfig.ragFile}`.trim()
+    };
 
-    // 4. Deduct Tokens & Save
-    user.tokens -= COST;
-    await user.save();
+    const finalMessages = [systemMessage, ...messages];
 
-    // 5. Return LLM Response + Usage Info
-    res.json({
-      ...llmResponse.data,
-      myautobot_usage: {
-        tokens_deducted: COST,
-        remaining_balance: user.tokens
-      }
-    });
+    // 3. FORWARD TO VPS LLM (With Timeout Protection)
+    try {
+      const llmResponse = await axios.post(
+        "http://51.79.175.189:11434/api/chat", 
+        {
+          model: model || user.botConfig.model.primary || "llama3",
+          messages: finalMessages,
+          stream: false,
+          options: {
+             num_thread: 16, // Optimized for your 24-core VPS
+             num_ctx: 4096
+          }
+        },
+        { timeout: 90000 } // 90 second limit
+      );
+
+      // 4. RETURN RESPONSE
+      return res.json({
+        success: true,
+        ...llmResponse.data,
+        myautobot_usage: {
+          tokens_deducted: CHAT_COST,
+          remaining_balance: user.tokens
+        }
+      });
+
+    } catch (llmErr) {
+      await User.findByIdAndUpdate(user._id, { $inc: { tokens: CHAT_COST } });
+      
+      console.error("🔥 VPS LLM Error:", llmErr.message);
+      return res.status(502).json({ 
+        success: false, 
+        error: "Neural Engine Timeout. Tokens have been refunded." 
+      });
+    }
 
   } catch (err) {
-    console.error("🔥 API Error:", err.message);
-    res.status(500).json({ error: "AI Engine Offline or Internal Error" });
+    console.error("🔥 Global API Error:", err.stack);
+    res.status(500).json({ success: false, error: "System Anomaly Detected." });
   }
 });
 
+router.get('/user-profile/:userId', async (req, res) => {
+    try {
+        const user = await User.findById(req.params.userId).select('apiKey tokens name botConfig');
+        if (!user) return res.status(404).json({ message: "User not found" });
+        res.json(user);
+    } catch (err) {
+        res.status(500).json({ message: "Database error" });
+    }
+});
+
+// --- 2. VERIFY API KEY ROUTE ---
+// Matches: GET /api/v1/auth/verify
+// NOTE: If this is inside your 'auth' router, the path in app.js must be adjusted.
+router.get('/v1/auth/verify', verifyApiKey, (req, res) => {
+    res.json({ 
+        success: true, 
+        message: "Connection Stable.", 
+        node: req.user.name, 
+        balance: req.user.tokens 
+    });
+});
+
+// routes/auth.js (or user.js)
+
+router.get("/user-profile/:userId", async (req, res) => {
+  try {
+    const user = await User.findById(req.params.userId)
+      .select("tokens referralCode referralCount name email");
+
+    if (!user) return res.status(404).json({ message: "Operator not found." });
+
+    // --- FIX FOR EXISTING USERS ---
+    if (!user.referralCode) {
+      user.referralCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+      await user.save(); // Save the new code permanently
+    }
+
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ message: "Neural sync error" });
+  }
+});
 
 module.exports = router;
