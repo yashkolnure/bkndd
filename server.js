@@ -5,9 +5,10 @@ require('dotenv').config();
 
 const app = express();
 
+
 // Middleware
-app.use(cors());
 app.use(express.json());
+app.use(cors());
 
 // Connect DB
 mongoose.connect(process.env.MONGO_URI)
@@ -21,7 +22,7 @@ app.use('/api/bot', require('./routes/bot'));
 app.use('/api/botRoutes', require('./routes/botRoutes')); 
 app.use('/api/chat', require('./routes/chat'));
 app.use('/api/leads', require('./routes/leads'));
-
+app.use('/api/payments', require('./routes/paymentRoutes'));
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
