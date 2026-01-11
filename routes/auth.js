@@ -719,6 +719,7 @@ router.get('/webhook/whatsapp', (req, res) => {
 // 2. Message Handling (Incoming WhatsApp Data)
 router.post('/webhook/whatsapp', async (req, res) => {
     const body = req.body;
+    console.log("Received WhatsApp Webhook:", JSON.stringify(body, null, 2));
 
     // Check if this is a WhatsApp Business Account event
     if (body.object === 'whatsapp_business_account') {
@@ -726,6 +727,7 @@ router.post('/webhook/whatsapp', async (req, res) => {
             const entry = body.entry?.[0];
             const changes = entry?.changes?.[0];
             const value = changes?.value;
+            console.log("WHATSAPP WEBHOOK PAYLOAD:", JSON.stringify(body, null, 2));
 
             // Check if there's an actual message in the payload
             if (value?.messages && value.messages[0]) {
@@ -744,6 +746,7 @@ router.post('/webhook/whatsapp', async (req, res) => {
                 // --- SENDING THE REPLY ---
                 const PHONE_ID = "1001284909724845"; // From your screenshot
                 const ACCESS_TOKEN = process.env.WA_PERMANENT_TOKEN;
+                console.log("Sending processing acknowledgment to WhatsApp user...");
 
                 await axios.post(
                     `https://graph.facebook.com/v21.0/${PHONE_ID}/messages`,
@@ -760,6 +763,7 @@ router.post('/webhook/whatsapp', async (req, res) => {
             res.sendStatus(200);
         } catch (error) {
             console.error("WhatsApp Webhook Error:", error.response?.data || error.message);
+            console.log("Full Payload:", JSON.stringify(body, null, 2));
             res.sendStatus(500);
         }
     } else {
