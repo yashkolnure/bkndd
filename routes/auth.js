@@ -745,7 +745,7 @@ router.post('/webhook/whatsapp', async (req, res) => {
                 
                 // --- SENDING THE REPLY ---
                 const PHONE_ID = "1001284909724845"; // From your screenshot
-                const ACCESS_TOKEN = process.env.WA_PERMANENT_TOKEN;
+                const ACCESS_TOKEN = "EAATyK3jkpoEBQTHmNWRfU3zwPUM135KT8xGHsa5QWerOAAS97qCp3ZAhMNiEruPZCevs3CRD8FWlhMfhg88eOllUtfw28BUmjGl0ecWeoD92pcjtWyu17w9jsbWMNwXSguc4Bha0ObAeAr7lY3DHOZCFLuEO4iYGceqLFgqbst7EsS48ZCX0ZAMYw6srhjNkHEmYFlu4ipNuvZC5zelf6MrG7WRW00juFPZCqSs56AsGwQp8cMhiPhZBZBA0HY0SDbLO5lYnTMqttixFGR3IAH9roge7OFWN5IB8yXAZDZD";
                 console.log("Sending processing acknowledgment to WhatsApp user...");
 
                 await axios.post(
