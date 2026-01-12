@@ -4,7 +4,7 @@ const axios = require("axios");
 
 const router = express.Router();
 
-const VERIFY_TOKEN = "myautobot_whatsapp_verify";
+const VERIFY_TOKEN = "ma_wa_handshake_kyifcl";
 const APP_SECRET = process.env.META_APP_SECRET;
 const ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 
