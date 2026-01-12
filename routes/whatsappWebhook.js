@@ -21,62 +21,10 @@ router.get("/whatsapp", (req, res) => {
 
   return res.sendStatus(403);
 });
-
-// POST – Incoming messages
-router.post(
-  "/whatsapp",
-  express.json({
-    verify: (req, res, buf) => {
-      const signature = req.headers["x-hub-signature-256"];
-      if (!signature) return;
-
-      const expected = `sha256=${crypto
-        .createHmac("sha256", APP_SECRET)
-        .update(buf)
-        .digest("hex")}`;
-
-      if (signature !== expected) {
-        throw new Error("Invalid signature");
-      }
-    },
-  }),
-  async (req, res) => {
-    try {
-      const entry = req.body.entry?.[0];
-      const change = entry?.changes?.[0];
-      const value = change?.value;
-
-      if (!value?.messages) return res.sendStatus(200);
-
-      const msg = value.messages[0];
-      const from = msg.from;
-      const text = msg.text?.body;
-      const phoneNumberId = value.metadata.phone_number_id;
-
-      console.log("📩 Incoming:", from, text);
-
-      await axios.post(
-        `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`,
-        {
-          messaging_product: "whatsapp",
-          to: from,
-          type: "text",
-          text: { body: `Hi 👋 You said: ${text}` },
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${ACCESS_TOKEN}`,
-            "Content-Type": "application/json",
-          },
-        }
-      );
-
-      res.sendStatus(200);
-    } catch (err) {
-      console.error("Webhook error:", err.message);
-      res.sendStatus(500);
-    }
-  }
-);
+router.post("/whatsapp", express.json(), (req, res) => {
+  console.log("🔥 WHATSAPP MESSAGE RECEIVED");
+  console.log(JSON.stringify(req.body, null, 2));
+  res.sendStatus(200);
+});
 
 module.exports = router;
