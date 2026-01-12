@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 require('dotenv').config();
 
+
 const app = express();
 
 
@@ -23,6 +24,7 @@ app.use('/api/botRoutes', require('./routes/botRoutes'));
 app.use('/api/chat', require('./routes/chat'));
 app.use('/api/leads', require('./routes/leads'));
 app.use('/api/payments', require('./routes/paymentRoutes'));
+app.use('/api/auth/webhook', require('./routes/whatsappWebhook'));
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
