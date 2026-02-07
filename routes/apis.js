@@ -64,40 +64,7 @@ router.post("/integrations/manual/instagram", async (req, res) => {
 });
 
 
-// Meta Webhook Verification
-app.get('/webhook', (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
 
-  if (mode && token === "myautobot_secret") {
-    res.status(200).send(challenge);
-  } else {
-    res.sendStatus(403);
-  }
-});
-
-// Receiving the Actual Message
-app.post('/webhook', (req, res) => {
-  const body = req.body;
-  if (body.object === 'whatsapp_business_account') {
-    const entry = body.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const message = changes?.value?.messages?.[0];
-
-    if (message) {
-      // THIS PUSHES DATA TO YOUR REACT DASHBOARD INSTANTLY
-      io.emit('whatsapp_message', {
-        text: message.text.body,
-        from: message.from,
-        time: new Date().toLocaleTimeString()
-      });
-    }
-    res.sendStatus(200);
-  } else {
-    res.sendStatus(404);
-  }
-});
 
 // --- PUBLIC CHAT ENDPOINT ---
 // --- PUBLIC CHAT ENDPOINT (OPTIMIZED) ---
