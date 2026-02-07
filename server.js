@@ -13,7 +13,7 @@ app.use(cors({
 }));
 
 /* ---------- Health Check ---------- */
-app.get('/api/health', (req, res) => {
+app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
