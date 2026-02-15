@@ -3,6 +3,149 @@ const express = require("express");
 const router = express.Router();
 const axios = require("axios");
 const verifyApiKey = require('../middleware/apiAuth');
+const mongoose = require("mongoose");
+
+
+router.put('/update/:id', async (req, res) => {
+  try {
+    const { name, email, contact, activeKnowledgeBase } = req.body;
+
+    // Find user and update only the provided fields
+    const updatedUser = await User.findByIdAndUpdate(
+      req.params.id,
+      { 
+        $set: { 
+          name, 
+          email, 
+          contact, 
+          activeKnowledgeBase 
+        } 
+      },
+      { new: true, runValidators: true }
+    ).select("-password"); // Don't return the hashed password
+
+    if (!updatedUser) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    res.json({ success: true, data: updatedUser });
+  } catch (error) {
+    console.error("Backend Sync Error:", error);
+    res.status(500).json({ success: false, message: "Server Error during update" });
+  }
+});
+
+router.post('/kb/create/:userId', async (req, res) => {
+  try {
+    const { kbName, kbType } = req.body;
+    const user = await User.findById(req.params.userId);
+
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+    // Prevent duplicate names
+    const exists = user.knowledgeBases.find(k => k.name === kbName);
+    if (exists) return res.status(400).json({ success: false, message: "KB Name already exists" });
+
+    user.knowledgeBases.push({ name: kbName, type: kbType || 'General' });
+    await user.save();
+
+    res.json({ success: true, data: user.knowledgeBases });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server Error" });
+  }
+});
+
+// @route   GET /api/kb/list/:userId
+// @desc    Fetch only the Knowledge Bases for the logged-in user
+router.get('/kb/list/:userId', async (req, res) => {
+  try {
+    const userId = req.params.userId;
+
+    // Find the user by ID and only return the knowledgeBases array
+    const user = await User.findById(userId).select('knowledgeBases activeKnowledgeBase');
+
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "User context not found." 
+      });
+    }
+
+    res.json({
+      success: true,
+      knowledgeBases: user.knowledgeBases || [],
+      activeKnowledgeBase: user.activeKnowledgeBase || ""
+    });
+  } catch (error) {
+    console.error("Internal Neural Error:", error);
+    res.status(500).json({ success: false, message: "Server Handshake Failed." });
+  }
+});
+
+// @route   PUT /api/update/:id
+router.put('/update/:id', async (req, res) => {
+  try {
+    // Dynamically update any field sent: name, email, OR the whole knowledgeBases array
+    const updateData = req.body;
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.params.id,
+      { $set: updateData }, 
+      { new: true, runValidators: true }
+    ).select("-password");
+
+    if (!updatedUser) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    // Always return the fresh data so the frontend can stay in sync
+    res.json({ success: true, data: updatedUser });
+  } catch (error) {
+    console.error("Update Error:", error);
+    res.status(500).json({ success: false, message: "Server Error" });
+  }
+});
+
+
+router.get("/all/:id", async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+    res.json({ success: true, data: user });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/all/:userId", async (req, res) => {
+  try {
+    // 1. Validate ID format to prevent server hang
+    if (!mongoose.Types.ObjectId.isValid(req.params.userId)) {
+      return res.status(400).json({ message: "Invalid Operator ID format." });
+    }
+
+    // 2. Fetch data required by the UI
+    // We include createdAt to calculate "Member Since"
+    const user = await User.findById(req.params.userId)
+      .select("name email tokens referralCode referralCount createdAt botConfig apiKey");
+
+    if (!user) return res.status(404).json({ message: "Operator not found in neural net." });
+
+    // 3. Fix for legacy users: Generate referral code if missing
+    if (!user.referralCode) {
+      user.referralCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+      await user.save();
+    }
+
+    res.json({
+      success: true,
+      data: user
+    });
+  } catch (err) {
+    console.error("Profile Sync Error:", err);
+    res.status(500).json({ message: "Neural sync error" });
+  }
+});
 
 
 router.get("/integrations/manual/instagram/:userId", async (req, res) => {
@@ -164,6 +307,57 @@ router.get('/v1/auth/verify', verifyApiKey, (req, res) => {
     });
 });
 
+// @route   PUT /api/update/:id
+router.put('/update/:id', async (req, res) => {
+  try {
+    const userId = req.params.id;
+    const { deleteKBId, name, email, contact, activeKnowledgeBase } = req.body;
+
+    let updateQuery = {};
+
+    // --- LOGIC 1: DELETE KB ENTRY ---
+    if (deleteKBId) {
+      updateQuery = { 
+        $pull: { knowledgeBases: { _id: deleteKBId } } 
+      };
+      
+      // Optional: If the KB being deleted is the active one, clear the active flag
+      const userBeforeDelete = await User.findById(userId);
+      const kbToDelete = userBeforeDelete.knowledgeBases.id(deleteKBId);
+      
+      if (userBeforeDelete.activeKnowledgeBase === kbToDelete?.name) {
+        updateQuery.$set = { activeKnowledgeBase: "" };
+      }
+    } 
+    // --- LOGIC 2: UPDATE PROFILE DATA ---
+    else {
+      updateQuery = { 
+        $set: { 
+          ...(name && { name }), 
+          ...(email && { email }), 
+          ...(contact && { contact }),
+          ...(activeKnowledgeBase !== undefined && { activeKnowledgeBase })
+        } 
+      };
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      updateQuery,
+      { new: true, runValidators: true }
+    ).select("-password");
+
+    if (!updatedUser) {
+      return res.status(404).json({ success: false, message: "User not found." });
+    }
+
+    res.json({ success: true, data: updatedUser });
+
+  } catch (error) {
+    console.error("Registry Sync Error:", error);
+    res.status(500).json({ success: false, message: "Server Error during sync." });
+  }
+});
 // routes/auth.js (or user.js)
 
 router.get("/user-profile/:userId", async (req, res) => {

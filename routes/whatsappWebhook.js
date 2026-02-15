@@ -4,27 +4,43 @@ const axios = require("axios");
 
 const router = express.Router();
 
-const VERIFY_TOKEN = "ma_wa_handshake_kyifcl";
+const VERIFY_TOKEN = "ma_wa_handshake_kyifcljsxujudsjnxavenirya2026";
 const APP_SECRET = process.env.META_APP_SECRET;
 const ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 
 // GET – Verification
-router.get("/whatsapp", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
+let messagesDb = []; // Temporary storage for demo purposes
 
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("✅ WhatsApp webhook verified");
-    return res.status(200).send(challenge);
+router.post("/whatsapp", (req, res) => {
+  const body = req.body;
+
+  if (body.object === "whatsapp_business_account") {
+    const entry = body.entry?.[0];
+    const message = entry?.changes?.[0]?.value?.messages?.[0];
+
+    if (message) {
+      const newMessage = {
+        id: message.id,
+        from: message.from,
+        text: message.text.body,
+        timestamp: new Date(),
+        type: "incoming"
+      };
+      messagesDb.push(newMessage);
+      
+      // OPTIONAL: If you want real-time updates in React, 
+      // you would trigger a Socket.io event here.
+    }
+    res.sendStatus(200);
+  } else {
+    res.sendStatus(404);
   }
+});
 
-  return res.sendStatus(403);
+// GET Route for React to fetch the message history
+router.get("/messages", (req, res) => {
+  res.json(messagesDb);
 });
-router.post("/whatsapp", express.json(), (req, res) => {
-  console.log("🔥 WHATSAPP MESSAGE RECEIVED");
-  console.log(JSON.stringify(req.body, null, 2));
-  res.sendStatus(200);
-});
+
 
 module.exports = router;

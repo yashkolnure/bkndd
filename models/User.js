@@ -9,6 +9,12 @@ const UserSchema = new mongoose.Schema({
   tokens: { type: Number, default: 100 },
   apiKey: { type: String, unique: true, sparse: true },
 
+  knowledgeBases: [{
+    name: { type: String, required: true },
+    type: { type: String, default: 'General' }, // e.g., 'Website', 'PDF', 'Manual'
+    status: { type: String, default: 'Inactive' } // 'Active' or 'Inactive'
+  }],
+  activeKnowledgeBase: { type: String, default: '' },
 
   // ---------------- REFERRAL SYSTEM ----------------
   referralCode: { type: String, unique: true }, // e.g., "YASH77"
@@ -46,6 +52,8 @@ const UserSchema = new mongoose.Schema({
   whatsappEnabled: { type: Boolean, default: false },
   whatsappBusinessId: { type: String, default: null },
   whatsappToken: { type: String, default: null },
+  telegramEnabled: { type: Boolean, default: false },
+  tgBotToken: { type: String, default: null },
 
   
 

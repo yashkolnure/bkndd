@@ -31,6 +31,8 @@ app.use('/api/chat', require('./routes/chat'));
 app.use('/api/leads', require('./routes/leads'));
 app.use('/api/payments', require('./routes/paymentRoutes'));
 app.use('/api/auth/webhook', require('./routes/whatsappWebhook'));
+app.use('/api/integrations', require('./routes/integrations'));
+
 
 /* ---------- Server ---------- */
 const PORT = process.env.PORT || 5000;
