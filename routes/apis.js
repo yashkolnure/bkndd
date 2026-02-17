@@ -287,14 +287,16 @@ router.post("/v1/chat/completions", async (req, res) => {
 
 router.get('/user-profile/:userId', async (req, res) => {
     try {
-        const user = await User.findById(req.params.userId).select('apiKey tokens name botConfig');
+        // Removing .select() returns all fields defined in the schema
+        const user = await User.findById(req.params.userId); 
+        
         if (!user) return res.status(404).json({ message: "User not found" });
+        
         res.json(user);
     } catch (err) {
         res.status(500).json({ message: "Database error" });
     }
 });
-
 // --- 2. VERIFY API KEY ROUTE ---
 // Matches: GET /api/v1/auth/verify
 // NOTE: If this is inside your 'auth' router, the path in app.js must be adjusted.

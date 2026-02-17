@@ -7,10 +7,13 @@ const ConversationSchema = new mongoose.Schema({
     {
       role: { type: String, enum: ['user', 'bot'] },
       text: String,
-      timestamp: { type: Date, default: Date.now }
+      timestamp: { type: Date, default: Date.now },
+      source: { type: String, default: 'web' },
     }
   ],
-  lastInteraction: { type: Date, default: Date.now }
+  lastInteraction: { type: Date, default: Date.now },
+  source: { type: String, enum: ['whatsapp', 'web', 'mobile'], default: 'web' }
 });
+
 
 module.exports = mongoose.model('Conversation', ConversationSchema);
