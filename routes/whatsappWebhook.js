@@ -8,21 +8,33 @@ const FormData = require('form-data');
 
 router.post("/whatsapp", async (req, res) => {
   const body = req.body;
-  console.log("Received WhatsApp Webhook:", JSON.stringify(body, null, 2)); // Log the entire payload for debugging
-
+  
   if (body.object === "whatsapp_business_account") {
     const entry = body.entry?.[0];
-    const wabaId = entry?.id;
-    const message = entry?.changes?.[0]?.value?.messages?.[0];
+    const changes = entry?.changes?.[0]?.value;
+    
+    // Use the Phone Number ID from metadata instead of the entry ID
+    const phoneNumberId = changes?.metadata?.phone_number_id;
+    const message = changes?.messages?.[0];
 
-    if (message && wabaId) {
+    if (message && phoneNumberId) {
       const customerNumber = message.from;
       const userQuery = message.text?.body;
 
       try {
-        // 1. Find the User who owns this Business Account
-        const owner = await User.findOne({ whatsappBusinessId: wabaId });
-        if (!owner) return res.sendStatus(200);
+        // 1. Find the User using the Phone Number ID
+        // Note: Ensure your User model 'whatsappBusinessId' field contains the Phone Number ID
+        const owner = await User.findOne({ 
+          $or: [
+            { "botConfig.phoneNumberId": phoneNumberId },
+            { whatsappBusinessId: phoneNumberId } 
+          ]
+        });
+
+        if (!owner) {
+          console.log(`Owner not found for Phone ID: ${phoneNumberId}`);
+          return res.sendStatus(200);
+        }
 
         // 2. Log incoming message to DB
         await Conversation.findOneAndUpdate(
@@ -34,17 +46,12 @@ router.post("/whatsapp", async (req, res) => {
           { upsert: true }
         );
 
-        // 3. CHECK TOGGLE: Only proceed to AI if Auto-Reply is ON
+        // 3. CHECK TOGGLE
         if (owner.botConfig?.isManualPromptEnabled) {
-          
-          // Prepare data for your AI Brain (using FormData as per your test page)
           const fd = new FormData();
-          // Use owner name as biz_id (ensure this matches what's in your AI brain)
-          const bizId = owner.activeKnowledgeBase + '_' + owner._id; // Fallback biz_id
+          const bizId = owner.activeKnowledgeBase + '_' + owner._id;
           fd.append('biz_id', bizId);
           fd.append('user_query', userQuery);
-          console.log("Prepared FormData for AI:", { bizId, userQuery });
-
 
           // 4. Get Reply from AI Brain
           const aiRes = await axios.post('http://72.60.196.84:8000/chat', fd, {
@@ -53,17 +60,17 @@ router.post("/whatsapp", async (req, res) => {
 
           const aiReply = aiRes.data.response;
 
-          // 5. Send AI Reply back to WhatsApp via Meta API
-          await axios.post(`https://graph.facebook.com/v21.0/${owner.botConfig.phoneNumberId || '959176433945485'}/messages`, {
+          // 5. Send AI Reply back
+          await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
             messaging_product: "whatsapp",
             to: customerNumber,
             type: "text",
             text: { body: aiReply }
           }, {
-            headers: { 'Authorization': `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN || owner.whatsappToken}` }
+            headers: { 'Authorization': `Bearer ${owner.whatsappToken}` }
           });
 
-          // 6. Log the AI's reply to DB history
+          // 6. Log AI reply
           await Conversation.findOneAndUpdate(
             { user: owner._id, customerIdentifier: customerNumber },
             {
@@ -73,7 +80,7 @@ router.post("/whatsapp", async (req, res) => {
           );
         }
       } catch (err) {
-        console.error("AI Auto-Reply Error:", err.message);
+        console.error("Webhook Processing Error:", err.response?.data || err.message);
       }
     }
     return res.sendStatus(200);
