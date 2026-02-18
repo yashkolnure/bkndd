@@ -8,6 +8,7 @@ const FormData = require('form-data');
 
 router.post("/whatsapp", async (req, res) => {
   const body = req.body;
+  console.log("Received WhatsApp Webhook:", JSON.stringify(body, null, 2)); // Log the entire payload for debugging
 
   if (body.object === "whatsapp_business_account") {
     const entry = body.entry?.[0];
