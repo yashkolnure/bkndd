@@ -4,88 +4,119 @@ const User = require('../models/User');
 const Conversation = require('../models/Conversation');
 const axios = require('axios');
 const FormData = require('form-data');
+const { Mutex } = require('async-mutex');
 
+// Memory cache for mutexes to handle concurrent messages from the same user
+const userLocks = new Map();
 
+/**
+ * PRODUCTION-READY WHATSAPP WEBHOOK
+ * Features: Race-condition handling, strict prompt grounding, history management
+ */
 router.post("/whatsapp", async (req, res) => {
   const body = req.body;
+
+  // 1. Quick Validation & Ack
+  if (body.object !== "whatsapp_business_account") return res.sendStatus(404);
   
-  if (body.object === "whatsapp_business_account") {
-    const entry = body.entry?.[0];
-    const changes = entry?.changes?.[0]?.value;
-    
-    // Use the Phone Number ID from metadata instead of the entry ID
-    const phoneNumberId = changes?.metadata?.phone_number_id;
-    const message = changes?.messages?.[0];
+  const entry = body.entry?.[0];
+  const changes = entry?.changes?.[0]?.value;
+  const phoneNumberId = changes?.metadata?.phone_number_id;
+  const message = changes?.messages?.[0];
 
-    if (message && phoneNumberId) {
-      const customerNumber = message.from;
-      const userQuery = message.text?.body;
+  // Return 200 immediately to Meta to avoid retries/timeouts
+  res.sendStatus(200);
 
-      try {
-        // 1. Find the User using the Phone Number ID
-        // Note: Ensure your User model 'whatsappBusinessId' field contains the Phone Number ID
-        const owner = await User.findOne({ 
-          $or: [
-            { "botConfig.phoneNumberId": phoneNumberId },
-            { whatsappBusinessId: phoneNumberId } 
-          ]
-        });
+  // 2. Filter for text messages only (Expand this for media later)
+  if (!message || !message.text || !phoneNumberId) return;
 
-        if (!owner) {
-          console.log(`Owner not found for Phone ID: ${phoneNumberId}`);
-          return res.sendStatus(200);
-        }
+  const customerNumber = message.from;
+  const userQuery = message.text.body.trim();
 
-        // 2. Log incoming message to DB
-        await Conversation.findOneAndUpdate(
-          { user: owner._id, customerIdentifier: customerNumber },
-          {
-            $push: { messages: { role: 'user', text: userQuery, source: 'whatsapp', timestamp: new Date() } },
-            $set: { lastInteraction: new Date() }
-          },
-          { upsert: true }
-        );
+  // 3. Prevent Race Conditions using a Mutex Lock per Customer
+  // This ensures if a user sends 3 messages rapidly, they are processed in order.
+  if (!userLocks.has(customerNumber)) userLocks.set(customerNumber, new Mutex());
+  const release = await userLocks.get(customerNumber).acquire();
 
-        // 3. CHECK TOGGLE
-        if (owner.botConfig?.isManualPromptEnabled) {
-          const fd = new FormData();
-          const bizId = owner.activeKnowledgeBase + '_' + owner._id;
-          fd.append('biz_id', bizId);
-          fd.append('user_query', userQuery);
+  try {
+    // 4. Optimized User Lookup
+    const owner = await User.findOne({ 
+      $or: [{ "botConfig.phoneNumberId": phoneNumberId }, { whatsappBusinessId: phoneNumberId }] 
+    }).lean(); // .lean() for faster read-only access
 
-          // 4. Get Reply from AI Brain
-          const aiRes = await axios.post('http://72.60.196.84:8000/chat', fd, {
-            headers: fd.getHeaders()
-          });
+    if (!owner || !owner.botConfig?.isManualPromptEnabled) return;
 
-          const aiReply = aiRes.data.response;
+    // 5. Atomic Update of Conversation History
+    const conversation = await Conversation.findOneAndUpdate(
+      { user: owner._id, customerIdentifier: customerNumber },
+      {
+        $push: { 
+          messages: { 
+            $each: [{ role: 'user', text: userQuery, source: 'whatsapp', timestamp: new Date() }],
+            $slice: -20 // Keep last 20 messages in DB to prevent document bloat
+          } 
+        },
+        $set: { lastInteraction: new Date() }
+      },
+      { upsert: true, new: true }
+    );
 
-          // 5. Send AI Reply back
-          await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
-            messaging_product: "whatsapp",
-            to: customerNumber,
-            type: "text",
-            text: { body: aiReply }
-          }, {
-            headers: { 'Authorization': `Bearer ${owner.whatsappToken}` }
-          });
+    // 6. Build Contextual Prompt (The "Brain" Logic)
+    const historyContext = conversation.messages.slice(-6)
+      .map(m => `${m.role === 'user' ? 'Customer' : 'Assistant'}: ${m.text}`)
+      .join('\n');
 
-          // 6. Log AI reply
-          await Conversation.findOneAndUpdate(
-            { user: owner._id, customerIdentifier: customerNumber },
-            {
-              $push: { messages: { role: 'bot', text: aiReply, source: 'whatsapp', timestamp: new Date() } },
-              $set: { lastInteraction: new Date() }
-            }
-          );
-        }
-      } catch (err) {
-        console.error("Webhook Processing Error:", err.response?.data || err.message);
-      }
-    }
-    return res.sendStatus(200);
+    const systemInstruction = `
+      ROLE: Official AI Support for myAutoBot.in.
+      STRICT RULES:
+      1. Use ONLY the provided Knowledge Base to answer. 
+      2. If info is missing, say: "I'm sorry, I don't have that specific detail. Can I have your email so our team can contact you?"
+      3. NEVER mention other AI models (OpenAI, Llama, etc).
+      4. Tone: Professional, helpful, under 3 sentences.
+      5. Today's Date: ${new Date().toDateString()}.
+    `;
+
+    // 7. Call AI Brain
+    const fd = new FormData();
+    fd.append('biz_id', `${owner.activeKnowledgeBase}_${owner._id}`);
+    fd.append('user_query', `
+      ${systemInstruction}
+      
+      HISTORY:
+      ${historyContext}
+      
+      CURRENT QUESTION:
+      ${userQuery}
+    `);
+
+    const aiRes = await axios.post('http://72.60.196.84:8000/chat', fd, {
+      headers: fd.getHeaders(),
+      timeout: 15000 // 15s timeout to prevent hanging requests
+    });
+
+    const aiReply = aiRes.data.response || "I'm having trouble connecting to my brain. Please try again in a moment.";
+
+    // 8. Dispatch Message to Meta API
+    await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
+      messaging_product: "whatsapp",
+      to: customerNumber,
+      type: "text",
+      text: { body: aiReply }
+    }, {
+      headers: { 'Authorization': `Bearer ${owner.whatsappToken}` }
+    });
+
+    // 9. Log the AI's reply
+    await Conversation.updateOne(
+      { user: owner._id, customerIdentifier: customerNumber },
+      { $push: { messages: { role: 'bot', text: aiReply, source: 'whatsapp', timestamp: new Date() } } }
+    );
+
+  } catch (err) {
+    console.error(`[CRITICAL ERROR] Customer: ${customerNumber} |`, err.response?.data || err.message);
+  } finally {
+    release(); // Always release the lock
   }
-  res.sendStatus(404);
 });
 
 // This MUST be inside this same file or mounted on the same path
