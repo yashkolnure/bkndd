@@ -91,7 +91,7 @@ router.post("/whatsapp", async (req, res) => {
 
     const aiRes = await axios.post('http://72.60.196.84:8000/chat', fd, {
       headers: fd.getHeaders(),
-      timeout: 15000 // 15s timeout to prevent hanging requests
+      timeout: 55000 // 55s timeout to prevent hanging requests
     });
 
     const aiReply = aiRes.data.response || "I'm having trouble connecting to my brain. Please try again in a moment.";
