@@ -55,7 +55,11 @@ const UserSchema = new mongoose.Schema({
   telegramEnabled: { type: Boolean, default: false },
   tgBotToken: { type: String, default: null },
 
-  
+
+  // ---------------- Bot name and ID ----------------
+  botIds: String,
+  botNames: String,
+
 
   // ---------------- PASSWORD RESET ----------------
   resetPasswordToken: String,

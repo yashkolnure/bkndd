@@ -1,63 +1,85 @@
-const Bot = require('../models/Bot');
+const axios = require('axios');
+const FormData = require('form-data');
 
-// SAVE OR UPDATE BOT CONFIG
-exports.saveBotConfig = async (req, res) => {
-  try {
-    const userId = req.user.id; // Derived from your Auth Middleware
-    const updateData = req.body;
+const ENGINE_URL = process.env.ENGINE_URL;
+const API_KEY = process.env.API_KEY;
+const headers = { 'Authorization': `Bearer ${API_KEY}` };
 
-    // 1. Validation check (Backend Safety)
-    if (!updateData.businessName) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Business name is required" 
-      });
+exports.createBot = async (req, res) => {
+    try {
+        const { name, systemPrompt } = req.body;
+        const botId = `bot_${Date.now()}`;
+
+        const payload = {
+            id: botId,
+            name,
+            base_model_id: "llama3.1:8b",
+            meta: {
+                system: systemPrompt,
+                params: { temperature: 0.1, stop: ["User:", "Assistant:"] }
+            },
+            is_active: true
+        };
+
+        const response = await axios.post(`${ENGINE_URL}/models/create`, payload, { headers });
+        res.status(201).json(response.data);
+    } catch (error) {
+        res.status(500).json({ error: "Failed to initialize bot." });
     }
-
-    // 2. Find by userId and Update, or Create if not found
-    const bot = await Bot.findOneAndUpdate(
-      { userId: userId },
-      { $set: updateData },
-      { 
-        new: true,          // Return the updated document
-        runValidators: true, // Ensure schema rules are followed
-        upsert: true         // Create if it doesn't exist
-      }
-    );
-
-    res.status(200).json({
-      success: true,
-      message: "Bot configuration saved successfully",
-      bot
-    });
-
-  } catch (error) {
-    console.error("BOT_SAVE_ERROR:", error);
-    res.status(500).json({ 
-      success: false, 
-      message: error.message 
-    });
-  }
 };
 
-// GET BOT CONFIG
-exports.getBotConfig = async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const bot = await Bot.findOne({ userId: userId });
+exports.addKnowledge = async (req, res) => {
+    try {
+        const { id } = req.params;
 
-    if (!bot) {
-      return res.status(404).json({ 
-        success: false, 
-        message: "No bot configuration found for this user." 
-      });
+        // 1. Upload File
+        const form = new FormData();
+        form.append('file', req.file.buffer, { filename: req.file.originalname });
+        form.append('process', 'true');
+
+        const uploadRes = await axios.post(`${ENGINE_URL}/files/`, form, {
+            headers: { ...headers, ...form.getHeaders() }
+        });
+
+        // 2. Fetch & Update Model's Knowledge Array
+        const bot = await axios.get(`${ENGINE_URL}/models/${id}`, { headers });
+        const updatedKnowledge = [...(bot.data.meta.knowledge || []), {
+            type: "file",
+            id: uploadRes.data.id,
+            name: req.file.originalname
+        }];
+
+        await axios.post(`${ENGINE_URL}/models/update`, {
+            id,
+            meta: { ...bot.data.meta, knowledge: updatedKnowledge }
+        }, { headers });
+
+        res.json({ success: true, fileId: uploadRes.data.id });
+    } catch (error) {
+        res.status(500).json({ error: "File processing failed." });
     }
-
-    res.status(200).json({
-      success: true,
-      bot
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
 };
+
+exports.updateIdentity = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { name, systemPrompt } = req.body;
+
+        const bot = await axios.get(`${ENGINE_URL}/models/${id}`, { headers });
+        
+        await axios.post(`${ENGINE_URL}/models/update`, {
+            id,
+            name: name || bot.data.name,
+            meta: { 
+                ...bot.data.meta, 
+                system: systemPrompt || bot.data.meta.system 
+            }
+        }, { headers });
+
+        res.json({ success: true, message: "Persona updated." });
+    } catch (error) {
+        res.status(500).json({ error: "Update failed." });
+    }
+};
+
+// ... other controller methods (listBots, deleteBot, removeKnowledge)

@@ -15,88 +15,128 @@ const userLocks = new Map();
  */
 router.post("/whatsapp", async (req, res) => {
   const body = req.body;
-
-  // 1. Quick Validation & Ack
   if (body.object !== "whatsapp_business_account") return res.sendStatus(404);
+  console.log("Received WhatsApp Webhook:", JSON.stringify(body));
   
+  // Ack to Meta immediately to prevent retries
+  res.sendStatus(200); 
+
   const entry = body.entry?.[0];
   const changes = entry?.changes?.[0]?.value;
+  
+  // Ignore status updates (delivered, read, etc.)
+  if (changes?.statuses) return; 
+
   const phoneNumberId = changes?.metadata?.phone_number_id;
   const message = changes?.messages?.[0];
 
-  // Return 200 immediately to Meta to avoid retries/timeouts
-  res.sendStatus(200);
-
-  // 2. Filter for text messages only (Expand this for media later)
   if (!message || !message.text || !phoneNumberId) return;
 
   const customerNumber = message.from;
   const userQuery = message.text.body.trim();
+  const messageId = message.id; // Extract unique message ID from Meta
 
-  // 3. Prevent Race Conditions using a Mutex Lock per Customer
-  // This ensures if a user sends 3 messages rapidly, they are processed in order.
+  // Mutex lock to prevent race conditions
   if (!userLocks.has(customerNumber)) userLocks.set(customerNumber, new Mutex());
   const release = await userLocks.get(customerNumber).acquire();
 
+  console.log(`Processing message from ${customerNumber}: "${userQuery}" (ID: ${messageId})`);
+
   try {
-    // 4. Optimized User Lookup
+    // 1. DEDUPLICATION CHECK
+    const existingMessage = await Conversation.findOne({
+      customerIdentifier: customerNumber,
+      "messages.messageId": messageId 
+    }).lean();
+    
+    if (existingMessage) {
+      console.log("Duplicate message ignored:", messageId);
+      return; 
+    }
+   
+    // 2. SAFE OWNER LOOKUP
     const owner = await User.findOne({ 
-      $or: [{ "botConfig.phoneNumberId": phoneNumberId }, { whatsappBusinessId: phoneNumberId }] 
-    }).lean(); // .lean() for faster read-only access
+      $or: [
+        { "botConfig.phoneNumberId": phoneNumberId }, 
+        { "botConfig.phoneNumberId": Number(phoneNumberId) },
+        { whatsappBusinessId: phoneNumberId }
+      ] 
+    }).lean();
+    
+    if (!owner || !owner._id) {
+      console.error(`[CRITICAL] Owner not found or missing _id for Phone ID: ${phoneNumberId}`);
+      return;
+    }
 
-    if (!owner || !owner.botConfig?.isManualPromptEnabled) return;
-
-    // 5. Atomic Update of Conversation History
+    // 3. UPDATE DB & GET HISTORY (Moved UP to always log incoming text)
     const conversation = await Conversation.findOneAndUpdate(
       { user: owner._id, customerIdentifier: customerNumber },
       {
         $push: { 
           messages: { 
-            $each: [{ role: 'user', text: userQuery, source: 'whatsapp', timestamp: new Date() }],
-            $slice: -20 // Keep last 20 messages in DB to prevent document bloat
+            $each: [{ role: 'user', text: userQuery, source: 'whatsapp', timestamp: new Date(), messageId: messageId }],
+            $slice: -15 
           } 
         },
-        $set: { lastInteraction: new Date() }
+        $set: { lastInteraction: new Date() },
+        $setOnInsert: {
+          user: owner._id,
+          customerIdentifier: customerNumber,
+          createdAt: new Date(),
+          status: 'active' 
+        }
       },
-      { upsert: true, new: true }
+      { upsert: true, new: true, setDefaultsOnInsert: true, runValidators: true }
     );
 
-    // 6. Build Contextual Prompt (The "Brain" Logic)
-    const historyContext = conversation.messages.slice(-6)
-      .map(m => `${m.role === 'user' ? 'Customer' : 'Assistant'}: ${m.text}`)
-      .join('\n');
+    console.log("Updated conversation history. Total messages stored:", conversation.messages.length);
 
-    const systemInstruction = `
-      ROLE: Official AI Support for myAutoBot.in.
+    // 4. CHECK IF AI IS ENABLED (Moved DOWN)
+    // If auto-reply is off, we stop here. The user's message is already saved!
+    if (!owner.botConfig?.isManualPromptEnabled) {
+      console.log(`Manual mode active for Owner ID: ${owner._id}. Message logged, skipping AI reply.`);
+      return;
+    }
+
+    // --- EVERYTHING BELOW ONLY RUNS IF AI IS ON ---
+    console.log("Identified owner for phoneNumberId", phoneNumberId, "Owner ID:", owner._id);
+    const ids = owner.botIds.split(',').filter(id => id.trim());
+    const activeBotId = ids[ids.length - 1]; 
+
+    const historyForAI = conversation.messages.map(m => ({
+      role: m.role === 'bot' ? 'assistant' : 'user',
+      content: m.text
+    }));
+
+    const systemInstruction = {
+      role: "system",
+      content: `ROLE: Official AI Support for myAutoBot.in.
       STRICT RULES:
-      1. Use ONLY the provided Knowledge Base to answer. 
-      2. If info is missing, say: "I'm sorry, I don't have that specific detail. Can I have your email so our team can contact you?"
-      3. NEVER mention other AI models (OpenAI, Llama, etc).
-      4. Tone: Professional, helpful, under 3 sentences.
-      5. Today's Date: ${new Date().toDateString()}.
-    `;
+      1. Answer using context. If unknown, ask for email.
+      2. Tone: Professional, under 3 sentences.
+      3. No AI model mentions.
+      4. Today's Date: ${new Date().toDateString()}.`
+    };
 
-    // 7. Call AI Brain
-    const fd = new FormData();
-    fd.append('biz_id', `${owner.activeKnowledgeBase}_${owner._id}`);
-    fd.append('user_query', `
-      ${systemInstruction}
-      
-      HISTORY:
-      ${historyContext}
-      
-      CURRENT QUESTION:
-      ${userQuery}
-    `);
+    const fullMessagePayload = [systemInstruction, ...historyForAI];
 
-    const aiRes = await axios.post('http://72.60.196.84:8000/chat', fd, {
-      headers: fd.getHeaders(),
-      timeout: 55000 // 55s timeout to prevent hanging requests
+    // 5. CALL NEW LLM BRAIN
+    const aiRes = await axios.post(`${process.env.CLOUDFLARE_URL}/chat/completions`, {
+      model: activeBotId, 
+      messages: fullMessagePayload,
+      temperature: 0.4
+    }, {
+      headers: { 
+        'Authorization': `Bearer ${process.env.BOT_API_KEY.trim()}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 45000
     });
+    
+    console.log("Received AI response for message ID", messageId);
+    const aiReply = aiRes.data?.choices?.[0]?.message?.content || "I'm currently experiencing high traffic. Could you please rephrase your request?";
 
-    const aiReply = aiRes.data.response || "I'm having trouble connecting to my brain. Please try again in a moment.";
-
-    // 8. Dispatch Message to Meta API
+    // 6. DISPATCH TO WHATSAPP
     await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
       messaging_product: "whatsapp",
       to: customerNumber,
@@ -105,17 +145,160 @@ router.post("/whatsapp", async (req, res) => {
     }, {
       headers: { 'Authorization': `Bearer ${owner.whatsappToken}` }
     });
-
-    // 9. Log the AI's reply
+    
+    console.log("Dispatched AI reply to WhatsApp for message ID", messageId);
+    
+    // 7. LOG AI REPLY
     await Conversation.updateOne(
       { user: owner._id, customerIdentifier: customerNumber },
       { $push: { messages: { role: 'bot', text: aiReply, source: 'whatsapp', timestamp: new Date() } } }
     );
 
   } catch (err) {
-    console.error(`[CRITICAL ERROR] Customer: ${customerNumber} |`, err.response?.data || err.message);
+    console.error(`[CRITICAL] WhatsApp AI Error:`, err.response?.data || err.message);
+    if (err.errors) console.error("Mongoose Validation Errors:", err.errors);
+
   } finally {
-    release(); // Always release the lock
+    release();
+    userLocks.delete(customerNumber); 
+    console.log(`Finished processing message ID ${messageId} from ${customerNumber}`);
+  }
+});
+
+
+router.post("/whatsapp-test", async (req, res) => {
+  const body = req.body;
+  
+  if (body.object !== "whatsapp_business_account") return res.sendStatus(404);
+  console.log("Received WhatsApp Webhook:", JSON.stringify(body));
+  res.sendStatus(200); 
+
+  const entry = body.entry?.[0];
+  const changes = entry?.changes?.[0]?.value;
+  if (changes?.statuses) return; 
+
+  const phoneNumberId = changes?.metadata?.phone_number_id;
+  const message = changes?.messages?.[0];
+
+  if (!message || !message.text || !phoneNumberId) return;
+
+  const customerNumber = message.from;
+  const userQuery = message.text.body.trim();
+  const messageId = message.id; 
+
+  if (!userLocks.has(customerNumber)) userLocks.set(customerNumber, new Mutex());
+  const release = await userLocks.get(customerNumber).acquire();
+
+  console.log(`Processing test message from ${customerNumber}: "${userQuery}" (ID: ${messageId})`);
+
+  try {
+    // 1. DEDUPLICATION CHECK
+    const existingMessage = await Conversation.findOne({
+      customerIdentifier: customerNumber,
+      "messages.messageId": messageId 
+    }).lean();
+    
+    if (existingMessage) {
+      console.log("Duplicate message ignored:", messageId);
+      return; 
+    }
+   
+    // 2. SAFE OWNER LOOKUP
+    const owner = await User.findOne({ 
+      $or: [
+        { "botConfig.phoneNumberId": phoneNumberId }, 
+        { "botConfig.phoneNumberId": Number(phoneNumberId) },
+        { whatsappBusinessId: phoneNumberId }
+      ] 
+    }).lean();
+    
+    if (!owner || !owner._id) {
+      console.error(`[CRITICAL] Owner not found for Phone ID: ${phoneNumberId}`);
+      return;
+    }
+
+    // 3. UPDATE DB & GET HISTORY (Moved UP to always log incoming text)
+    const conversation = await Conversation.findOneAndUpdate(
+      { user: owner._id, customerIdentifier: customerNumber },
+      {
+        $push: { 
+          messages: { 
+            $each: [{ role: 'user', text: userQuery, source: 'whatsapp-test', timestamp: new Date(), messageId: messageId }],
+            $slice: -15 
+          } 
+        },
+        $set: { lastInteraction: new Date() },
+        $setOnInsert: {
+          user: owner._id,
+          customerIdentifier: customerNumber,
+          createdAt: new Date(),
+          status: 'active' 
+        }
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true, runValidators: true }
+    );
+
+    // 4. CHECK IF AI IS ENABLED (Moved DOWN)
+    if (!owner.botConfig?.isManualPromptEnabled) {
+      console.log(`Manual mode active for Owner ID: ${owner._id}. Message logged, skipping AI reply.`);
+      return;
+    }
+
+    // --- EVERYTHING BELOW ONLY RUNS IF AI IS ON ---
+    const historyForAI = conversation.messages.map(m => ({
+      role: m.role === 'bot' ? 'assistant' : 'user',
+      content: m.text
+    }));
+
+    const systemInstruction = {
+      role: "system",
+      content: `ROLE: Official AI Support for myAutoBot.in.
+      STRICT RULES:
+      1. Answer using context. If unknown, ask for email.
+      2. Tone: Professional, under 3 sentences.
+      3. No AI model mentions.
+      4. Today's Date: ${new Date().toDateString()}.`
+    };
+
+    const fullMessagePayload = [systemInstruction, ...historyForAI];
+
+    // 5. CALL FREE KEYLESS API (Pollinations.ai)
+    console.log("Calling free Pollinations AI endpoint...");
+    const aiRes = await axios.post(`https://text.pollinations.ai/openai`, {
+      model: "openai", 
+      messages: fullMessagePayload,
+      temperature: 0.4
+    }, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 45000
+    });
+    
+    const aiReply = aiRes.data?.choices?.[0]?.message?.content || "Testing mode: AI unavailable. Please try again.";
+    console.log("AI Reply generated successfully for message ID", messageId);
+
+    // 6. DISPATCH TO WHATSAPP
+    await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
+      messaging_product: "whatsapp",
+      to: customerNumber,
+      type: "text",
+      text: { body: aiReply }
+    }, {
+      headers: { 'Authorization': `Bearer ${owner.whatsappToken}` }
+    });
+    
+    // 7. LOG AI REPLY TO DATABASE
+    await Conversation.updateOne(
+      { user: owner._id, customerIdentifier: customerNumber },
+      { $push: { messages: { role: 'bot', text: aiReply, source: 'whatsapp-test', timestamp: new Date() } } }
+    );
+
+  } catch (err) {
+    console.error(`[CRITICAL] WhatsApp AI Error:`, err.response?.data || err.message);
+    if (err.errors) console.error("Mongoose Validation Errors:", err.errors);
+  } finally {
+    release();
+    userLocks.delete(customerNumber); 
+    console.log(`Finished processing message ID ${messageId} from ${customerNumber}`);
   }
 });
 
@@ -175,6 +358,32 @@ router.post("/toggle-auto-reply", async (req, res) => {
 
     res.json({ success: true, isAutoReplyEnabled: user.botConfig.isManualPromptEnabled });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// --- GET WHATSAPP CONVERSATIONS (Optimized) ---
+router.get("/whatsapp-conversations", async (req, res) => {
+  try {
+    const { userId } = req.query; 
+    
+    if (!userId) {
+      return res.status(400).json({ error: "Missing userId parameter" });
+    }
+
+    // Query DB: Only get conversations belonging to this user 
+    // AND where at least one message has the source 'whatsapp' or 'whatsapp-test'
+    const history = await Conversation.find({ 
+      user: userId,
+      "messages.source": { $in: ["whatsapp", "whatsapp-test"] }
+    })
+    .sort({ lastInteraction: -1 }) // Newest chats at the top
+    .lean(); // .lean() makes the query significantly faster since we just need the JSON
+
+    res.json(history);
+  } catch (err) {
+    console.error("Error fetching WhatsApp conversations:", err);
     res.status(500).json({ error: err.message });
   }
 });

@@ -3,7 +3,319 @@ const express = require("express");
 const router = express.Router();
 const axios = require("axios");
 const verifyApiKey = require('../middleware/apiAuth');
+const multer = require('multer');
 const mongoose = require("mongoose");
+
+const FormData = require('form-data'); // Ensure this is the node 'form-data' package
+
+const upload = multer({ storage: multer.memoryStorage() });
+router.post('/chat', async (req, res) => {
+    try {
+        // 1. EXTRACT HISTORY FROM REQUEST BODY
+        const { message, userId, history } = req.body; 
+
+        if (!userId || !message) {
+            return res.status(400).json({ error: "Missing Neural context (userId or message)" });
+        }
+
+        const user = await User.findById(userId);
+        if (!user || !user.botIds) {
+            return res.status(404).json({ error: "No active Agent found for this Operator." });
+        }
+
+        const ids = user.botIds.split(',').filter(id => id.trim());
+        const activeBotId = ids[ids.length - 1]; 
+
+        // 2. CONSTRUCT THE CHAT PAYLOAD WITH MEMORY
+        // If history exists, we map it. If not, we start a new array.
+        let formattedMessages = [];
+
+        if (history && Array.isArray(history)) {
+            formattedMessages = history.map(msg => ({
+                // Open WebUI expects 'assistant', but your React state uses 'bot'
+                role: msg.role === 'bot' ? 'assistant' : msg.role,
+                content: msg.content
+            }));
+        } else {
+            // Fallback if history is missing
+            formattedMessages = [{ role: "user", content: message }];
+        }
+
+        const chatPayload = {
+            model: activeBotId,
+            messages: formattedMessages, // <--- NOW CONTAINS THE FULL TRANSCRIPT
+        };
+
+        const targetUrl = `${process.env.CLOUDFLARE_URL}/chat/completions`;
+        const headers = { 
+            'Authorization': `Bearer ${process.env.BOT_API_KEY.trim()}`,
+            'Content-Type': 'application/json'
+        };
+
+        const response = await axios.post(targetUrl, chatPayload, { headers });
+
+        res.json({
+            success: true,
+            reply: response.data.choices[0].message.content,
+            botId: activeBotId
+        });
+
+    } catch (err) {
+        console.error("💥 Chat Sync Error:", err.response?.data || err.message);
+        res.status(err.response?.status || 500).json({ 
+            error: "Neural pathway blocked.", 
+            details: err.response?.data || err.message 
+        });
+    }
+});
+
+router.get('/user-inventory/:userId', async (req, res) => {
+    try {
+        const user = await User.findById(req.params.userId);
+        if (!user || !user.botIds) return res.json({ bots: [] });
+
+        const ids = user.botIds.split(',').filter(id => id.trim());
+        
+        // Optional: Fetch current names from OpenWebUI so they are always synced
+        const botList = await Promise.all(ids.map(async (id) => {
+            try {
+                const owuRes = await axios.get(`${process.env.CLOUDFLARE_URL}/models/model?id=${id}`, { headers });
+                return { id: id, name: owuRes.data.name };
+            } catch {
+                return { id: id, name: "Unknown Bot" };
+            }
+        }));
+
+        res.json({ bots: botList });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+/**
+ * 2. GET BOT CONFIG (FROM OPENWEBUI)
+ * We fetch the model from OpenWebUI and extract the system prompt
+ */
+const OPENWEBUI_URL = process.env.CLOUDFLARE_URL;
+const OPENWEBUI_KEY = process.env.BOT_API_KEY;
+
+router.get('/config/:botId', async (req, res) => {
+    try {
+        const headers = { 'Authorization': `Bearer ${process.env.BOT_API_KEY.trim()}` };
+        const response = await axios.get(`${process.env.CLOUDFLARE_URL}/models/model?id=${req.params.botId}`, { headers });
+        
+        const owuModel = response.data;
+
+        // Ensure we send the WHOLE meta object so the frontend can see 'knowledge'
+        res.json({ 
+            botConfig: {
+                id: owuModel.id,
+                name: owuModel.name,
+                customSystemPrompt: owuModel.params?.system || "",
+                meta: owuModel.meta, // <--- THIS MUST BE INCLUDED
+                model: { primary: owuModel.base_model_id }
+            } 
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+/**
+ * 2. UPDATE BOT CONFIGURATION
+ */
+router.put('/update', async (req, res) => {
+    try {
+        // 1. EXTRACT ALL DATA FROM FRONTEND
+        // We need botName, baseModel, and knowledgeFiles to actually apply changes
+        const { botId, systemPrompt, botName, baseModel, knowledgeFiles } = req.body;
+        
+        const OPENWEBUI_URL = process.env.CLOUDFLARE_URL;
+        const OPENWEBUI_KEY = process.env.BOT_API_KEY;
+        const headers = { 
+            'Authorization': `Bearer ${OPENWEBUI_KEY?.trim()}`,
+            'Content-Type': 'application/json'
+        };
+
+        if (!botId) return res.status(400).json({ error: "Missing botId" });
+
+        // --- STEP 1: FETCH CURRENT MODEL STATE ---
+        // We still fetch to ensure we don't lose other meta tags (like images/caps)
+        const currentRes = await axios.get(`${OPENWEBUI_URL}/models/model?id=${botId}`, { headers });
+        const currentModel = currentRes.data;
+
+        // --- STEP 2: CONSTRUCT THE ACTUAL UPDATED PAYLOAD ---
+        const updatePayload = {
+            id: botId,
+            // Use new name if provided, otherwise stay with current
+            name: botName || currentModel.name, 
+            // Use new base model if provided, otherwise stay with current
+            base_model_id: baseModel || currentModel.base_model_id, 
+            params: { 
+                ...currentModel.params, 
+                system: systemPrompt // Update the logic
+            },
+            meta: {
+                ...currentModel.meta, 
+                // CRITICAL: Use the knowledgeFiles array from the frontend.
+                // If a user deleted a file in the UI, it won't be in this array.
+                knowledge: knowledgeFiles || currentModel.meta?.knowledge 
+            }
+        };
+
+        // --- STEP 3: SYNC TO OPENWEBUI ---
+        const targetUrl = `${OPENWEBUI_URL}/models/model/update?id=${botId}`;
+        console.log(`📤 Syncing Neural Architecture for: ${updatePayload.name}`);
+        
+        const response = await axios.post(targetUrl, updatePayload, { headers });
+
+        res.json({ 
+            success: true, 
+            message: "Neural Node Synced",
+            data: response.data 
+        });
+        console.log("✅ Sync successful for bot:", updatePayload.name);
+
+    } catch (err) {
+        const errorData = err.response?.data || err.message;
+        console.error("💥 Sync Error:", errorData);
+        res.status(err.response?.status || 500).json({ error: "Sync failed", details: errorData });
+    }
+});
+
+router.post('/upload-knowledge', upload.single('file'), async (req, res) => {
+    try {
+        const file = req.file;
+        const headers = { 'Authorization': `Bearer ${process.env.BOT_API_KEY.trim()}` };
+
+        // 1. Upload to OpenWebUI files endpoint
+        const form = new FormData();
+        form.append('file', file.buffer, { filename: file.originalname });
+        
+        const uploadRes = await axios.post(`${process.env.CLOUDFLARE_URL}/files/`, form, {
+            headers: { ...headers, ...form.getHeaders() }
+        });
+
+        // 2. Return the metadata so the frontend can add it to the list
+        res.json({ 
+            success: true, 
+            fileMetadata: {
+                type: "file",
+                id: uploadRes.data.id,
+                name: file.originalname
+            } 
+        });
+    } catch (err) {
+        res.status(500).json({ error: "Upload failed" });
+    }
+});
+
+router.post('/deploy-bot', upload.array('files'), async (req, res) => {
+    try {
+        // userId must be sent from the frontend to identify the record to update
+        const { botName, systemPrompt, userId } = req.body; 
+        const files = req.files;
+
+        if (!files || files.length === 0) {
+            return res.status(400).json({ error: "No files received by server" });
+        }
+
+        const headers = { 'Authorization': `Bearer ${process.env.BOT_API_KEY}` };
+        const knowledgeItems = [];
+
+        console.log(`🚀 Processing ${files.length} documents for: ${botName}`);
+
+        // --- PHASE 1 & 2: UPLOAD & POLL ---
+        for (const file of files) {
+            console.log(`📡 Phase 1: Uploading ${file.originalname}...`);
+            const form = new FormData();
+            form.append('file', file.buffer, { filename: file.originalname });
+            form.append('process', 'true');
+
+            const uploadRes = await axios.post(`${process.env.CLOUDFLARE_URL}/files/`, form, {
+                headers: { ...headers, ...form.getHeaders() }
+            });
+
+            const fileId = uploadRes.data.id;
+
+            let isReady = false;
+            for (let i = 0; i < 20; i++) {
+                const statusRes = await axios.get(`${process.env.CLOUDFLARE_URL}/files/${fileId}/process/status`, { headers });
+                if (statusRes.data.status === 'completed') {
+                    isReady = true;
+                    break;
+                }
+                if (statusRes.data.status === 'failed') throw new Error(`Vector processing failed for ${file.originalname}`);
+                await new Promise(r => setTimeout(r, 2000));
+            }
+
+            if (!isReady) throw new Error(`Indexing timed out for ${file.originalname}`);
+
+            knowledgeItems.push({
+                "type": "file",
+                "id": fileId,
+                "url": fileId,
+                "name": file.originalname,
+                "status": "uploaded",
+                "size": file.size,
+                "file": uploadRes.data
+            });
+            console.log(`✅ ${file.originalname} processed.`);
+        }
+
+        // --- PHASE 3: CREATE AGENT ---
+        console.log("🤖 Phase 3: Creating multi-document agent...");
+        const botPayload = {
+            "id": `bot_${Date.now()}`,
+            "base_model_id": "llama3.1:8b",
+            "name": botName,
+            "meta": {
+                "profile_image_url": "/static/favicon.png",
+                "capabilities": { 
+                    "file_context": true, "vision": true, "file_upload": true, 
+                    "web_search": true, "image_generation": true, "citations": true
+                },
+                "system": systemPrompt,
+                "knowledge": knowledgeItems,
+                "params": { 
+                    "system": systemPrompt, "temperature": 0.3, "stop": ["User:", "Assistant:"]
+                }
+            },
+            "params": { "system": systemPrompt },
+            "is_active": true
+        };
+
+        const botRes = await axios.post(`${process.env.CLOUDFLARE_URL}/models/create`, botPayload, { headers });
+        const finalBotId = botRes.data.id; // Get the real ID from the API response
+
+        // --- PHASE 4: DATABASE PERSISTENCE ---
+        if (userId) {
+            console.log(`💾 Syncing bot [${finalBotId}] to User [${userId}]...`);
+            
+            /** * Mongoose approach: Appending to a string or array 
+             * If your user table has 'botIds' and 'botNames' as strings:
+             */
+             const user = await User.findById(userId);
+             if (user) {
+                 // Option A: If storing as comma-separated strings
+                 user.botIds = user.botIds ? `${user.botIds},${finalBotId}` : finalBotId;
+                 user.botNames = user.botNames ? `${user.botNames},${botName}` : botName;
+                 
+                 await user.save();
+                 console.log("✅ User table updated successfully.");
+             }
+        }
+
+        console.log("🎉 Pipeline complete. Agent live and stored.");
+        res.status(200).json({ success: true, botId: finalBotId });
+
+    } catch (error) {
+        console.error("Pipeline Error:", error.response?.data || error.message);
+        res.status(500).json({ 
+            error: error.message,
+            details: error.response?.data || "Internal server error" 
+        });
+    }
+});
 
 
 router.put('/update/:id', async (req, res) => {
