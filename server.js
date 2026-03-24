@@ -32,7 +32,7 @@ app.use('/api/leads', require('./routes/leads'));
 app.use('/api/payments', require('./routes/paymentRoutes'));
 app.use('/api/auth/webhook', require('./routes/whatsappWebhook'));
 app.use('/api/integrations', require('./routes/integrations'));
-
+app.use('/api/admin', require('./routes/adminRoutes'));
 
 /* ---------- Server ---------- */
 const PORT = process.env.PORT || 5005;

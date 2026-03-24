@@ -1,8 +1,8 @@
 const axios = require('axios');
 const FormData = require('form-data');
 
-const ENGINE_URL = process.env.ENGINE_URL;
-const API_KEY = process.env.API_KEY;
+const ENGINE_URL = process.env.ENGINE_URL_BOT;
+const API_KEY = process.env.API_KEY_BOT;
 const headers = { 'Authorization': `Bearer ${API_KEY}` };
 
 exports.createBot = async (req, res) => {

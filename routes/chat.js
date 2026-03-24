@@ -102,7 +102,9 @@ router.get('/public-info/:userId', async (req, res) => {
 });
 /**
  * --- 5. PUBLIC: CHAT INTERFACE (Lead Scanning + Tokens) ---
- */router.post('/public-message/:userId', async (req, res) => {
+ */
+
+    router.post('/public-message/:userId', async (req, res) => {
     const { message, customerData } = req.body;
     const { userId } = req.params;
     const CHAT_COST = 5;

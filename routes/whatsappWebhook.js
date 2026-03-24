@@ -5,6 +5,7 @@ const Conversation = require('../models/Conversation');
 const axios = require('axios');
 const FormData = require('form-data');
 const { Mutex } = require('async-mutex');
+const ProcessedMessage = require("../models/ProcessedMessage");
 
 // Memory cache for mutexes to handle concurrent messages from the same user
 const userLocks = new Map();
@@ -13,6 +14,8 @@ const userLocks = new Map();
  * PRODUCTION-READY WHATSAPP WEBHOOK
  * Features: Race-condition handling, strict prompt grounding, history management
  */
+
+
 router.post("/whatsapp", async (req, res) => {
   const body = req.body;
   if (body.object !== "whatsapp_business_account") return res.sendStatus(404);
@@ -36,6 +39,22 @@ router.post("/whatsapp", async (req, res) => {
   const userQuery = message.text.body.trim();
   const messageId = message.id; // Extract unique message ID from Meta
 
+  try {
+
+  await ProcessedMessage.create({
+    messageId: messageId,
+    customerNumber: customerNumber
+  });
+
+} catch (err) {
+
+  if (err.code === 11000) {
+    console.log("Duplicate webhook ignored:", messageId);
+    return;
+  }
+
+  throw err;
+}
   // Mutex lock to prevent race conditions
   if (!userLocks.has(customerNumber)) userLocks.set(customerNumber, new Mutex());
   const release = await userLocks.get(customerNumber).acquire();
@@ -186,6 +205,22 @@ router.post("/whatsapp-test", async (req, res) => {
   const userQuery = message.text.body.trim();
   const messageId = message.id; 
 
+  try {
+
+  await ProcessedMessage.create({
+    messageId: messageId,
+    customerNumber: customerNumber
+  });
+
+} catch (err) {
+
+  if (err.code === 11000) {
+    console.log("Duplicate webhook ignored:", messageId);
+    return;
+  }
+
+  throw err;
+}
   if (!userLocks.has(customerNumber)) userLocks.set(customerNumber, new Mutex());
   const release = await userLocks.get(customerNumber).acquire();
 
