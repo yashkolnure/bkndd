@@ -111,18 +111,25 @@ router.post("/whatsapp", async (req, res) => {
 
     // --- NEW: NOTIFY THE OWNER ---
     // We notify the owner that they have a new message from a customer
-    if (owner.fcmToken && owner.fcmToken.length > 0) {
-      sendPushNotification(
-        owner.fcmToken,
-        `${customerNumber}`,
-        userQuery.length > 50 ? userQuery.substring(0, 47) + "..." : userQuery,
-        {
-          type: "NEW_MESSAGE",
-          customerNumber: customerNumber,
-          conversationId: conversation._id.toString()
-        }
-      );
-    }
+if (owner.fcmToken) {
+  try {
+    // Await ensures the process finishes and you can catch errors
+    await sendPushNotification(
+      owner.fcmToken,
+      `New: ${customerNumber}`, // Title: Who is messaging
+      userQuery.length > 60 ? userQuery.substring(0, 57) + "..." : userQuery, // Body
+      {
+        type: "NEW_MESSAGE",
+        // CRITICAL: All data values MUST be strings
+        customerNumber: String(customerNumber), 
+        conversationId: conversation._id.toString()
+      }
+    );
+    console.log(`Push sent to ${owner.email} for customer ${customerNumber}`);
+  } catch (fcmErr) {
+    console.error("Failed to send push notification:", fcmErr.message);
+  }
+}
     // If auto-reply is off, we stop here. The user's message is already saved!
     if (!owner.botConfig?.isManualPromptEnabled) {
       console.log(`Manual mode active for Owner ID: ${owner._id}. Message logged, skipping AI reply.`);
