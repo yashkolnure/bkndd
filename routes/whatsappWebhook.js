@@ -114,7 +114,7 @@ router.post("/whatsapp", async (req, res) => {
     if (owner.fcmToken && owner.fcmToken.length > 0) {
       sendPushNotification(
         owner.fcmToken,
-        `New message from ${customerNumber}`,
+        `${customerNumber}`,
         userQuery.length > 50 ? userQuery.substring(0, 47) + "..." : userQuery,
         {
           type: "NEW_MESSAGE",
