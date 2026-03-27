@@ -122,12 +122,7 @@ router.post("/whatsapp", async (req, res) => {
           conversationId: conversation._id.toString()
         }
       );
-      console.log(`Sent push notification to owner ${owner._id} for new message from ${customerNumber}`);
     }
-
-    console.log("Updated conversation history. Total messages stored:", conversation.messages.length);
-
-    // 4. CHECK IF AI IS ENABLED (Moved DOWN)
     // If auto-reply is off, we stop here. The user's message is already saved!
     if (!owner.botConfig?.isManualPromptEnabled) {
       console.log(`Manual mode active for Owner ID: ${owner._id}. Message logged, skipping AI reply.`);
@@ -135,7 +130,6 @@ router.post("/whatsapp", async (req, res) => {
     }
 
     // --- EVERYTHING BELOW ONLY RUNS IF AI IS ON ---
-    console.log("Identified owner for phoneNumberId", phoneNumberId, "Owner ID:", owner._id);
     const ids = owner.botIds.split(',').filter(id => id.trim());
     const activeBotId = ids[ids.length - 1]; 
 
