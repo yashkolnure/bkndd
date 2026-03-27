@@ -122,6 +122,7 @@ router.post("/whatsapp", async (req, res) => {
           conversationId: conversation._id.toString()
         }
       );
+      console.log(`Sent push notification to owner ${owner._id} for new message from ${customerNumber}`);
     }
 
     console.log("Updated conversation history. Total messages stored:", conversation.messages.length);
