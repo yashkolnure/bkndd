@@ -13,6 +13,8 @@ router.post("/update-fcm-token", authMiddleware, async (req, res) => {
   await User.findByIdAndUpdate(userId, {
     $addToSet: { fcmTokens: fcmToken } // $addToSet prevents duplicates
   });
+  const user = await User.findById(userId);
+  console.log("Updated FCM Tokens for User:", user);
 
   res.sendStatus(200);
 });
