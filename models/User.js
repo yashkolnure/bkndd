@@ -8,6 +8,10 @@ const UserSchema = new mongoose.Schema({
   contact: { type: String }, // Added for your MyAutoBot registration
   tokens: { type: Number, default: 100 },
   apiKey: { type: String, unique: true, sparse: true },
+  fcmToken: {
+    type: String,
+    default: null
+  },
 
   knowledgeBases: [{
     name: { type: String, required: true },

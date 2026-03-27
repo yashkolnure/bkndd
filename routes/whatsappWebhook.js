@@ -6,6 +6,7 @@ const axios = require('axios');
 const FormData = require('form-data');
 const { Mutex } = require('async-mutex');
 const ProcessedMessage = require("../models/ProcessedMessage");
+const { sendPushNotification } = require("../lib/firebase");
 
 // Memory cache for mutexes to handle concurrent messages from the same user
 const userLocks = new Map();
@@ -107,6 +108,21 @@ router.post("/whatsapp", async (req, res) => {
       },
       { upsert: true, new: true, setDefaultsOnInsert: true, runValidators: true }
     );
+
+    // --- NEW: NOTIFY THE OWNER ---
+    // We notify the owner that they have a new message from a customer
+    if (owner.fcmTokens && owner.fcmTokens.length > 0) {
+      sendPushNotification(
+        owner.fcmTokens,
+        `New message from ${customerNumber}`,
+        userQuery.length > 50 ? userQuery.substring(0, 47) + "..." : userQuery,
+        {
+          type: "NEW_MESSAGE",
+          customerNumber: customerNumber,
+          conversationId: conversation._id.toString()
+        }
+      );
+    }
 
     console.log("Updated conversation history. Total messages stored:", conversation.messages.length);
 
