@@ -116,7 +116,7 @@ if (owner.fcmToken) {
     // Await ensures the process finishes and you can catch errors
     await sendPushNotification(
       owner.fcmToken,
-      `New: ${customerNumber}`, // Title: Who is messaging
+      `${customerNumber}`, // Title: Who is messaging
       userQuery.length > 60 ? userQuery.substring(0, 57) + "..." : userQuery, // Body
       {
         type: "NEW_MESSAGE",
