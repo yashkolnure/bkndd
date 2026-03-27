@@ -23,7 +23,7 @@ router.post("/update-fcm-token", authMiddleware, async (req, res) => {
     // 3. Update the user
     const user = await User.findByIdAndUpdate(
       targetUserId,
-      { $addToSet: { fcmTokens: fcmToken } },
+      { $addToSet: { fcmToken: fcmToken } },
       { new: true } // This returns the updated document instead of the old one
     );
 
