@@ -8,27 +8,17 @@ const { Mutex } = require('async-mutex');
 const ProcessedMessage = require("../models/ProcessedMessage");
 const { sendPushNotification } = require("../lib/firebase");
 
-// Memory cache for mutexes to handle concurrent messages from the same user
 const userLocks = new Map();
-
-/**
- * PRODUCTION-READY WHATSAPP WEBHOOK
- * Features: Race-condition handling, strict prompt grounding, history management
- */
-
 
 router.post("/whatsapp", async (req, res) => {
   const body = req.body;
   if (body.object !== "whatsapp_business_account") return res.sendStatus(404);
   console.log("Received WhatsApp Webhook:", JSON.stringify(body));
-  
-  // Ack to Meta immediately to prevent retries
   res.sendStatus(200); 
 
   const entry = body.entry?.[0];
   const changes = entry?.changes?.[0]?.value;
   
-  // Ignore status updates (delivered, read, etc.)
   if (changes?.statuses) return; 
 
   const phoneNumberId = changes?.metadata?.phone_number_id;
@@ -38,7 +28,7 @@ router.post("/whatsapp", async (req, res) => {
 
   const customerNumber = message.from;
   const userQuery = message.text.body.trim();
-  const messageId = message.id; // Extract unique message ID from Meta
+  const messageId = message.id;
 
   try {
 
@@ -56,7 +46,6 @@ router.post("/whatsapp", async (req, res) => {
 
   throw err;
 }
-  // Mutex lock to prevent race conditions
   if (!userLocks.has(customerNumber)) userLocks.set(customerNumber, new Mutex());
   const release = await userLocks.get(customerNumber).acquire();
 
@@ -74,7 +63,6 @@ router.post("/whatsapp", async (req, res) => {
       return; 
     }
    
-    // 2. SAFE OWNER LOOKUP
     const owner = await User.findOne({ 
       $or: [
         { "botConfig.phoneNumberId": phoneNumberId }, 
@@ -88,7 +76,6 @@ router.post("/whatsapp", async (req, res) => {
       return;
     }
 
-    // 3. UPDATE DB & GET HISTORY (Moved UP to always log incoming text)
     const conversation = await Conversation.findOneAndUpdate(
       { user: owner._id, customerIdentifier: customerNumber },
       {
@@ -109,19 +96,16 @@ router.post("/whatsapp", async (req, res) => {
       { upsert: true, new: true, setDefaultsOnInsert: true, runValidators: true }
     );
 
-    // --- NEW: NOTIFY THE OWNER ---
-    // We notify the owner that they have a new message from a customer
 if (owner.fcmToken) {
   try {
-    // Await ensures the process finishes and you can catch errors
+    
     await sendPushNotification(
       owner.fcmToken,
-      `${customerNumber}`, // Title: Who is messaging
+      `${customerNumber}`,
       userQuery.length > 60 ? userQuery.substring(0, 57) + "..." : userQuery, // Body
       {
         type: "NEW_MESSAGE",
-        // CRITICAL: All data values MUST be strings
-        customerNumber: String(customerNumber), 
+        customerNumber: String(customerNumber),
         conversationId: conversation._id.toString()
       }
     );
@@ -130,13 +114,11 @@ if (owner.fcmToken) {
     console.error("Failed to send push notification:", fcmErr.message);
   }
 }
-    // If auto-reply is off, we stop here. The user's message is already saved!
     if (!owner.botConfig?.isManualPromptEnabled) {
       console.log(`Manual mode active for Owner ID: ${owner._id}. Message logged, skipping AI reply.`);
       return;
     }
 
-    // --- EVERYTHING BELOW ONLY RUNS IF AI IS ON ---
     const ids = owner.botIds.split(',').filter(id => id.trim());
     const activeBotId = ids[ids.length - 1]; 
 
@@ -157,7 +139,6 @@ if (owner.fcmToken) {
 
     const fullMessagePayload = [systemInstruction, ...historyForAI];
 
-    // 5. CALL NEW LLM BRAIN
     const aiRes = await axios.post(`${process.env.CLOUDFLARE_URL}/chat/completions`, {
       model: activeBotId, 
       messages: fullMessagePayload,
@@ -173,7 +154,6 @@ if (owner.fcmToken) {
     console.log("Received AI response for message ID", messageId);
     const aiReply = aiRes.data?.choices?.[0]?.message?.content || "I'm currently experiencing high traffic. Could you please rephrase your request?";
 
-    // 6. DISPATCH TO WHATSAPP
     await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
       messaging_product: "whatsapp",
       to: customerNumber,
@@ -245,7 +225,6 @@ router.post("/whatsapp-test", async (req, res) => {
   console.log(`Processing test message from ${customerNumber}: "${userQuery}" (ID: ${messageId})`);
 
   try {
-    // 1. DEDUPLICATION CHECK
     const existingMessage = await Conversation.findOne({
       customerIdentifier: customerNumber,
       "messages.messageId": messageId 
@@ -256,7 +235,6 @@ router.post("/whatsapp-test", async (req, res) => {
       return; 
     }
    
-    // 2. SAFE OWNER LOOKUP
     const owner = await User.findOne({ 
       $or: [
         { "botConfig.phoneNumberId": phoneNumberId }, 
@@ -270,7 +248,6 @@ router.post("/whatsapp-test", async (req, res) => {
       return;
     }
 
-    // 3. UPDATE DB & GET HISTORY (Moved UP to always log incoming text)
     const conversation = await Conversation.findOneAndUpdate(
       { user: owner._id, customerIdentifier: customerNumber },
       {
@@ -291,13 +268,11 @@ router.post("/whatsapp-test", async (req, res) => {
       { upsert: true, new: true, setDefaultsOnInsert: true, runValidators: true }
     );
 
-    // 4. CHECK IF AI IS ENABLED (Moved DOWN)
     if (!owner.botConfig?.isManualPromptEnabled) {
       console.log(`Manual mode active for Owner ID: ${owner._id}. Message logged, skipping AI reply.`);
       return;
     }
 
-    // --- EVERYTHING BELOW ONLY RUNS IF AI IS ON ---
     const historyForAI = conversation.messages.map(m => ({
       role: m.role === 'bot' ? 'assistant' : 'user',
       content: m.text
@@ -315,7 +290,6 @@ router.post("/whatsapp-test", async (req, res) => {
 
     const fullMessagePayload = [systemInstruction, ...historyForAI];
 
-    // 5. CALL FREE KEYLESS API (Pollinations.ai)
     console.log("Calling free Pollinations AI endpoint...");
     const aiRes = await axios.post(`https://text.pollinations.ai/openai`, {
       model: "openai", 
@@ -329,7 +303,6 @@ router.post("/whatsapp-test", async (req, res) => {
     const aiReply = aiRes.data?.choices?.[0]?.message?.content || "Testing mode: AI unavailable. Please try again.";
     console.log("AI Reply generated successfully for message ID", messageId);
 
-    // 6. DISPATCH TO WHATSAPP
     await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
       messaging_product: "whatsapp",
       to: customerNumber,
@@ -339,7 +312,6 @@ router.post("/whatsapp-test", async (req, res) => {
       headers: { 'Authorization': `Bearer ${owner.whatsappToken}` }
     });
     
-    // 7. LOG AI REPLY TO DATABASE
     await Conversation.updateOne(
       { user: owner._id, customerIdentifier: customerNumber },
       { $push: { messages: { role: 'bot', text: aiReply, source: 'whatsapp-test', timestamp: new Date() } } }
@@ -355,7 +327,6 @@ router.post("/whatsapp-test", async (req, res) => {
   }
 });
 
-// This MUST be inside this same file or mounted on the same path
 router.post("/log-outgoing", async (req, res) => {
   const { userId, customerNumber, text } = req.body;
   try {
@@ -380,19 +351,15 @@ router.post("/log-outgoing", async (req, res) => {
   }
 });
 
-
-// --- 2. THE GET ROUTE (Fetches from DB for Frontend) ---
 router.get("/messages", async (req, res) => {
   try {
     const { userId } = req.query; // Passed from React
     if (!userId) return res.status(400).json({ error: "Missing userId" });
 
-    // Find conversations for this specific user
     const history = await Conversation.find({ 
         user: userId 
     }).sort({ lastInteraction: -1 });
 
-    // On the frontend, you already have the filter for source === 'whatsapp'
     res.json(history);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -405,7 +372,7 @@ router.post("/toggle-auto-reply", async (req, res) => {
   try {
     const user = await User.findByIdAndUpdate(
       userId,
-      { $set: { "botConfig.isManualPromptEnabled": enabled } }, // Using this field as the auto-reply toggle
+      { $set: { "botConfig.isManualPromptEnabled": enabled } }, 
       { new: true }
     );
 
@@ -416,7 +383,6 @@ router.post("/toggle-auto-reply", async (req, res) => {
 });
 
 
-// --- GET WHATSAPP CONVERSATIONS (Optimized) ---
 router.get("/whatsapp-conversations", async (req, res) => {
   try {
     const { userId } = req.query; 
@@ -425,15 +391,12 @@ router.get("/whatsapp-conversations", async (req, res) => {
       return res.status(400).json({ error: "Missing userId parameter" });
     }
 
-    // Query DB: Only get conversations belonging to this user 
-    // AND where at least one message has the source 'whatsapp' or 'whatsapp-test'
     const history = await Conversation.find({ 
       user: userId,
       "messages.source": { $in: ["whatsapp", "whatsapp-test"] }
     })
     .sort({ lastInteraction: -1 }) // Newest chats at the top
-    .lean(); // .lean() makes the query significantly faster since we just need the JSON
-
+    .lean(); 
     res.json(history);
   } catch (err) {
     console.error("Error fetching WhatsApp conversations:", err);
