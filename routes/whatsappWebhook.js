@@ -10,7 +10,7 @@ const { sendPushNotification } = require("../lib/firebase");
 
 const userLocks = new Map();
 
-router.post("/whatsapp", async (req, res) => {
+router.post("/whatsapp-test", async (req, res) => {
   const body = req.body;
   if (body.object !== "whatsapp_business_account") return res.sendStatus(404);
   console.log("Received WhatsApp Webhook:", JSON.stringify(body));
@@ -18,8 +18,7 @@ router.post("/whatsapp", async (req, res) => {
 
   const entry = body.entry?.[0];
   const changes = entry?.changes?.[0]?.value;
-  
-  if (changes?.statuses) return; 
+  if (changes?.statuses) return;
 
   const phoneNumberId = changes?.metadata?.phone_number_id;
   const message = changes?.messages?.[0];
@@ -52,7 +51,6 @@ router.post("/whatsapp", async (req, res) => {
   console.log(`Processing message from ${customerNumber}: "${userQuery}" (ID: ${messageId})`);
 
   try {
-    // 1. DEDUPLICATION CHECK
     const existingMessage = await Conversation.findOne({
       customerIdentifier: customerNumber,
       "messages.messageId": messageId 
@@ -165,7 +163,6 @@ if (owner.fcmToken) {
     
     console.log("Dispatched AI reply to WhatsApp for message ID", messageId);
     
-    // 7. LOG AI REPLY
     await Conversation.updateOne(
       { user: owner._id, customerIdentifier: customerNumber },
       { $push: { messages: { role: 'bot', text: aiReply, source: 'whatsapp', timestamp: new Date() } } }
@@ -183,7 +180,7 @@ if (owner.fcmToken) {
 });
 
 
-router.post("/whatsapp-test", async (req, res) => {
+router.post("/whatsapp", async (req, res) => {
   const body = req.body;
   
   if (body.object !== "whatsapp_business_account") return res.sendStatus(404);
@@ -353,7 +350,7 @@ router.post("/log-outgoing", async (req, res) => {
 
 router.get("/messages", async (req, res) => {
   try {
-    const { userId } = req.query; // Passed from React
+    const { userId } = req.query;
     if (!userId) return res.status(400).json({ error: "Missing userId" });
 
     const history = await Conversation.find({ 
@@ -395,7 +392,7 @@ router.get("/whatsapp-conversations", async (req, res) => {
       user: userId,
       "messages.source": { $in: ["whatsapp", "whatsapp-test"] }
     })
-    .sort({ lastInteraction: -1 }) // Newest chats at the top
+    .sort({ lastInteraction: -1 })
     .lean(); 
     res.json(history);
   } catch (err) {
