@@ -11,7 +11,7 @@ const { sendPushNotification } = require("../lib/firebase");
 const userLocks = new Map();
 const VERIFY_TOKEN = 'ma_wa_handshake_kyifcljsxujudsjnxavenirya2026';
 
-app.get('/webhook', (req, res) => {
+router.get('/whatsapp', (req, res) => {
   const mode      = req.query['hub.mode'];
   const token     = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
