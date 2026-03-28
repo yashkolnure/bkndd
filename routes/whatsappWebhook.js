@@ -24,7 +24,7 @@ router.get('/whatsapp', (req, res) => {
 });
 
 
-router.post("/whatsapp-test", async (req, res) => {
+router.post("/whatsapp", async (req, res) => {
   const body = req.body;
   if (body.object !== "whatsapp_business_account") return res.sendStatus(404);
   console.log("Received WhatsApp Webhook:", JSON.stringify(body));
@@ -194,7 +194,7 @@ if (owner.fcmToken) {
 });
 
 
-router.post("/whatsapp", async (req, res) => {
+router.post("/whatsapp-test", async (req, res) => {
   const body = req.body;
   
   if (body.object !== "whatsapp_business_account") return res.sendStatus(404);
