@@ -29,8 +29,9 @@ router.post("/whatsapp", async (req, res) => {
   if (body.object !== "whatsapp_business_account") return res.sendStatus(404);
   console.log("Received WhatsApp Webhook:", JSON.stringify(body));
   res.sendStatus(200); 
+
 console.log("Webhook verification successful, processing payload...");
-   axios.post("https://waleads.in/api/webhook", body)
+   axios.post("https://wpleads.in/api/webhook", body)
     .then(() => {
       console.log("Payload forwarded successfully");
     })
