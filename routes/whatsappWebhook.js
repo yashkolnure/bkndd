@@ -30,6 +30,15 @@ router.post("/whatsapp", async (req, res) => {
   console.log("Received WhatsApp Webhook:", JSON.stringify(body));
   res.sendStatus(200); 
 
+   axios.post("https://waleads.in/api/webhook", body)
+    .then(() => {
+      console.log("Payload forwarded successfully");
+    })
+    .catch((err) => {
+      console.error("Error forwarding payload:", err.message);
+    });
+
+    
   const entry = body.entry?.[0];
   const changes = entry?.changes?.[0]?.value;
   if (changes?.statuses) return;
