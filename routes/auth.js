@@ -13,6 +13,95 @@ const Conversation = require('../models/Conversation');
 ========================================================= */
 const express = require("express");
 const router = express.Router();
+
+
+const { OAuth2Client } = require("google-auth-library");
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+ 
+router.post("/google", async (req, res) => {
+  const { credential } = req.body;
+ 
+  if (!credential) {
+    return res.status(400).json({ message: "Missing Google credential token." });
+  }
+ 
+  try {
+    /* ---------- 1. VERIFY GOOGLE ID TOKEN ---------- */
+    const ticket = await googleClient.verifyIdToken({
+      idToken:  credential,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+ 
+    const payload = ticket.getPayload();
+    const { email, name, sub: googleId, email_verified } = payload;
+ 
+    if (!email_verified) {
+      return res.status(401).json({ message: "Google account email is not verified." });
+    }
+ 
+    const normalizedEmail = email.toLowerCase().trim();
+ 
+    /* ---------- 2. FIND EXISTING USER ---------- */
+    let user = await User.findOne({ email: normalizedEmail });
+ 
+    /* ---------- 3. AUTO-REGISTER IF NEW ---------- */
+    if (!user) {
+      // Google users have no password — generate a random unhashable placeholder
+      // so the bcrypt field is never empty (schema requirement)
+      const salt            = await bcrypt.genSalt(10);
+      const randomPassword  = await bcrypt.hash(crypto.randomBytes(32).toString("hex"), salt);
+ 
+      user = new User({
+        name,
+        email:    normalizedEmail,
+        password: randomPassword,   // can never be used for password login
+        contact:  "",               // not available from Google — user can fill later
+        status:   "active",
+        tokens:   500,              // same starting bonus as email registration
+        googleId,                   // store so you can identify OAuth users later
+      });
+ 
+      await user.save();
+ 
+      console.log(`✅ Google OAuth: new user registered — ${normalizedEmail}`);
+    } else {
+      // Existing user — attach googleId if they signed in normally before
+      if (!user.googleId) {
+        user.googleId = googleId;
+        await user.save();
+        console.log(`🔗 Google OAuth: linked Google ID to existing account — ${normalizedEmail}`);
+      }
+    }
+ 
+    /* ---------- 4. SIGN JWT (identical to /login) ---------- */
+    const token = jwt.sign(
+      { id: user._id },
+      process.env.JWT_SECRET,
+      { expiresIn: "1d" }
+    );
+ 
+    /* ---------- 5. RESPONSE (identical shape to /login) ---------- */
+    return res.status(200).json({
+      token,
+      user: {
+        id:    user._id.toString(),
+        name:  user.name,
+        email: user.email,
+      },
+    });
+ 
+  } catch (err) {
+    console.error("Google OAuth Error:", err.message);
+ 
+    // google-auth-library throws when the token is forged / expired
+    if (err.message?.includes("Token used too late") || err.message?.includes("Invalid token")) {
+      return res.status(401).json({ message: "Google session expired. Please try again." });
+    }
+ 
+    return res.status(500).json({ message: "Google sign-in failed. Please try again." });
+  }
+});
+
 router.post("/meta-connect", async (req, res) => {
   console.log("META CONNECT BODY >>>", req.body);
 

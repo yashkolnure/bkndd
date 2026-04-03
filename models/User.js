@@ -12,6 +12,7 @@ const UserSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  googleId: { type: String, default: null },
 
   knowledgeBases: [{
     name: { type: String, required: true },
