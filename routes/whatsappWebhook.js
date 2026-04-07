@@ -318,7 +318,6 @@ if (owner.fcmToken) {
     })
   
   );
-console.log("Constructed message history for AI:", historyForAI);
 
 
     const systemInstruction = {
@@ -348,6 +347,7 @@ console.log("Constructed message history for AI:", historyForAI);
     console.log("Received AI response for message ID", messageId);
     const aiReply = aiRes.data?.choices?.[0]?.message?.content || "I'm currently experiencing high traffic. Could you please rephrase your request?";
 
+console.log("Constructed message history for AI:", historyForAI);
     await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
       messaging_product: "whatsapp",
       to: customerNumber,
