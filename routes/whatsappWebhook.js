@@ -165,6 +165,7 @@ router.post("/whatsapp", async (req, res) => {
       timeout: 45000
     });
 
+    console.log("dynamicSystemPrompt sent to AI:", dynamicSystemPrompt);
     console.log("Constructed message history for AI:", historyForAI);
     console.log("Received AI response for message ID", messageId);
     const aiReply = aiRes.data?.choices?.[0]?.message?.content || "I'm currently experiencing high traffic. Could you please rephrase your request?";
