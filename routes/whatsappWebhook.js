@@ -315,8 +315,10 @@ if (owner.fcmToken) {
     const historyForAI = conversation.messages.map(m => ({
       role: m.role === 'bot' ? 'assistant' : 'user',
       content: m.text
-    }));
-
+    })
+  
+  );
+console.log("Constructed message history for AI:", historyForAI);
 
 
     const systemInstruction = {
