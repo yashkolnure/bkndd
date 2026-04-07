@@ -1,3 +1,4 @@
 utils/*.json
 lib/*.json
 *.json
+.env
