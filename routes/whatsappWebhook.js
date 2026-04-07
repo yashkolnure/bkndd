@@ -29,13 +29,13 @@ router.post("/whatsapp", async (req, res) => {
   if (body.object !== "whatsapp_business_account") return res.sendStatus(404);
   res.sendStatus(200); 
 
-   axios.post("https://wpleads.in/api/webhook", body)
-    .then(() => {
-      console.log("Payload forwarded successfully");
-    })
-    .catch((err) => {
-      console.error("Error forwarding payload:", err.message);
-    });
+  //  axios.post("https://wpleads.in/api/webhook", body)
+  //   .then(() => {
+  //     console.log("Payload forwarded successfully");
+  //   })
+  //   .catch((err) => {
+  //     console.error("Error forwarding payload:", err.message);
+  //   });
 
 
 
