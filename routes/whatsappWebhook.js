@@ -132,7 +132,7 @@ router.post("/whatsapp", async (req, res) => {
     let dynamicSystemPrompt = "Official AI Support for myAutoBot.in."; 
     try {
       // We call your existing config endpoint to get the customSystemPrompt
-      const configRes = await axios.get(`${process.env.BACKEND_URL}/api/config/${activeBotId}`);
+      const configRes = await axios.get(`https://myautobot.in/api/config/${activeBotId}`);
       if (configRes.data?.botConfig?.customSystemPrompt) {
         dynamicSystemPrompt = configRes.data.botConfig.customSystemPrompt;
       }
@@ -148,11 +148,7 @@ router.post("/whatsapp", async (req, res) => {
     const systemInstruction = {
       role: "system",
       content: `${dynamicSystemPrompt}
-      STRICT RULES:
-      1. Answer using context. If unknown, ask for email.
-      2. Tone: Professional, under 3 sentences.
-      3. No AI model mentions.
-      4. Today's Date: ${new Date().toDateString()}.`
+      Today's Date: ${new Date().toDateString()}.`
     };
 
     const fullMessagePayload = [systemInstruction, ...historyForAI];
